@@ -19,7 +19,7 @@
     </style>
   </head>
   <body>
-    <div id="example"></div>
+    <div id="example"><h1>Happy Birthday Жека!</h2></div>
   <script src="data/points.js"></script>
   <!--<script src="data/words-wiki.js"></script>-->
   <script src="js/third-party/threejs/three.min.js"></script>
@@ -60,6 +60,7 @@
       renderer = new THREE.WebGLRenderer();
       element = renderer.domElement;
       container = document.getElementById('example');
+container.innerHTML = '';
       container.appendChild(element);
 
       effect = new THREE.StereoEffect(renderer);
