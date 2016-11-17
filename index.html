@@ -1,3 +1,206 @@
-<html>
-hello world
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Cardboard Wikipedia</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+      body {
+        margin: 0px;
+        overflow: hidden;
+      }
+      #example {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="example"></div>
+  <script src="data/points.js"></script>
+  <!--<script src="data/words-wiki.js"></script>-->
+  <script src="js/third-party/threejs/three.min.js"></script>
+  <script src="js/third-party/threejs/StereoEffect.js"></script>
+  <script src="js/third-party/threejs/DeviceOrientationControls.js"></script>
+  <script src="js/third-party/threejs/FlyControls.js"></script>
+    <script type="application/x-glsl" id="sky-vertex">
+    varying vec2 vUV;
+
+    void main() {
+      vUV = uv;
+      vec4 pos = vec4(position, 1.0);
+      gl_Position = projectionMatrix * modelViewMatrix * pos;
+    }
+    </script>
+
+        <script type="application/x-glsl" id="sky-fragment">
+    uniform sampler2D texture;
+    varying vec2 vUV;
+
+    void main() {
+      vec4 sample = texture2D(texture, vUV);
+      gl_FragColor = vec4(sample.xyz, sample.w);
+    }
+    </script>
+
+    <script>
+    var camera, scene, renderer;
+    var effect, controls;
+    var element, container;
+
+    var clock = new THREE.Clock();
+
+    init();
+    animate();
+
+    function init() {
+      renderer = new THREE.WebGLRenderer();
+      element = renderer.domElement;
+      container = document.getElementById('example');
+      container.appendChild(element);
+
+      effect = new THREE.StereoEffect(renderer);
+
+      scene = new THREE.Scene();
+
+      camera = new THREE.PerspectiveCamera(90, 1, 0.001, 1000000);
+      camera.position.set(0, 10, 0);
+      scene.add(camera);
+
+      controls = new THREE.FlyControls( camera, element );
+
+      controls.movementSpeed = 100;
+      controls.rollSpeed = Math.PI / 24;
+      controls.autoForward = true;
+      controls.dragToLook = false;
+      controls.moveState.forward = 1;
+      controls.updateMovementVector();
+
+
+      function setOrientationControls(e) {
+        if (!e.alpha) {
+          return;
+        }
+
+        controls = new THREE.DeviceOrientationControls(camera, true);
+        controls.autoForward = true;
+        controls.movementSpeed = 100;
+        controls.connect();
+        controls.update();
+
+        element.addEventListener('click', fullscreen, false);
+
+        window.removeEventListener('deviceorientation', setOrientationControls, true);
+      }
+      window.addEventListener('deviceorientation', setOrientationControls, true);
+
+      var geometry = new THREE.SphereGeometry(3000, 60, 40);
+
+      var uniforms = {
+        texture: { type: 't', value: THREE.ImageUtils.loadTexture('data/mway.jpg') }
+      };
+
+      var material = new THREE.ShaderMaterial( {
+        uniforms:       uniforms,
+        vertexShader:   document.getElementById('sky-vertex').textContent,
+        fragmentShader: document.getElementById('sky-fragment').textContent
+      });
+
+      skyBox = new THREE.Mesh(geometry, material);
+      skyBox.scale.set(-1, 1, 1);
+      skyBox.eulerOrder = 'XZY';
+      skyBox.renderDepth = 100000.0;
+      scene.add(skyBox);
+
+
+      sprite = new THREE.TextureLoader().load("data/lensflare2.jpg" );
+
+      material = new THREE.PointsMaterial( { size: 3, map: sprite, blending: THREE.AdditiveBlending, depthTest: false, transparent : true } );
+      material.color.setHSL( 0.0, 1.,0.9 );
+
+
+      geometry = new THREE.BufferGeometry();
+      particles = POINTS.length
+      var positions = new Float32Array( particles * 3 );
+      var colors = new Float32Array( particles * 3 );
+      var sizes = new Float32Array( particles );
+
+      k = 100
+      var color = new THREE.Color();
+      for ( var i = 0, i3 = 0; i < particles; i ++, i3 += 3 ) {
+
+        positions[ i3 + 0 ] = POINTS[i][0]*k;
+        positions[ i3 + 1 ] = POINTS[i][1]*k;
+        positions[ i3 + 2 ] = POINTS[i][2]*k;
+
+        color.setHSL( i / particles, 0.0, 0.5 );
+
+        colors[ i3 + 0 ] = color.r;
+        colors[ i3 + 1 ] = color.g;
+        colors[ i3 + 2 ] = color.b;
+
+        sizes[ i ] = Math.min(particles/i, 5) ;
+
+      }
+
+      geometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+      geometry.addAttribute( 'customColor', new THREE.BufferAttribute( colors, 3 ) );
+      geometry.addAttribute( 'size', new THREE.BufferAttribute( sizes, 1 ) );
+
+
+      particles = new THREE.Points( geometry, material );
+      scene.add(particles);
+
+      window.addEventListener('resize', resize, false);
+      setTimeout(resize, 1);
+    }
+
+    function resize() {
+      var width = container.offsetWidth;
+      var height = container.offsetHeight;
+
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+
+      renderer.setSize(width, height);
+      effect.setSize(width, height);
+    }
+
+    function update(dt) {
+      resize();
+      skyBox.position.x = camera.position.x
+      skyBox.position.y = camera.position.y
+      skyBox.position.z = camera.position.z
+      camera.updateProjectionMatrix();
+
+      controls.update(dt);
+    }
+
+    function render(dt) {
+      effect.render(scene, camera);
+    }
+
+    function animate(t) {
+      requestAnimationFrame(animate);
+
+      update(clock.getDelta());
+      render(clock.getDelta());
+    }
+
+    function fullscreen() {
+      if (container.requestFullscreen) {
+        container.requestFullscreen();
+      } else if (container.msRequestFullscreen) {
+        container.msRequestFullscreen();
+      } else if (container.mozRequestFullScreen) {
+        container.mozRequestFullScreen();
+      } else if (container.webkitRequestFullscreen) {
+        container.webkitRequestFullscreen();
+      }
+    }
+  </script>
+  </body>
 </html>
