@@ -1,0 +1,15 @@
+---
+title: Зимой в горах
+subtitle: Заехал на Драгобрат без приключений
+layout: default
+modal-id: 3
+date: 2015-12-30
+img: dragobrat.jpg
+thumbnail: dragobrat-thumbnail.jpg
+alt: image-alt
+project-date: Декабрь 2015
+client: Жуков Александр
+category: Зима
+description: Lorem ipsum dolor sit amet, usu cu alterum nominavi lobortis. At duo novum diceret. Tantas apeirian vix et, usu sanctus postulant inciderint ut, populo diceret necessitatibus in vim. Cu eum dicam feugiat noluisse.
+
+---

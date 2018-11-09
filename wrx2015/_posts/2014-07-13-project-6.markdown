@@ -1,0 +1,15 @@
+---
+title: Доволен
+subtitle: Классная тачка
+layout: default
+modal-id: 6
+date: 2014-07-31
+img: dovolen.jpg
+thumbnail: dovolen-thumbnail.jpg
+alt: image-alt
+project-date: July 2014
+client: Жуков Александр
+category: Отзыв
+description: Что сказать, даже после 4 лет эксплуатации машиной очень доволен. Голову не делает, бензин не жрет, ничего не ломается, рулится прекрасно, разгон ураганный.
+
+---

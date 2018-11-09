@@ -1,0 +1,39 @@
+url: https://zhuker.github.io
+baseurl: /wrx2015
+
+host: 0.0.0.0
+
+# Site settings
+title: Стоковый WRX
+email: zhukov.alex@gmail.com
+description: "Write an awesome description for your new site here. You can edit this line in _config.yml. It will appear in your document head meta (for Google search results) and in your feed.xml site description."
+
+
+# Team names, titles and social links
+people:
+- name: Субару на подоле
+  pic: 1
+  position: Гарантийное СТО, остался доволен, ничего не сломали.
+  link: http://subaru.kiev.ua
+
+- name: Субару Хаус
+  pic: 2
+  position: Честные ребята, менял мелочи по подвеске, проходил ТО
+  link: http://subaruhouse.com/
+
+- name: Сам старался
+  pic: 3
+  position: Программист
+  link: https://facebook.com/zhukov.alex
+
+# Social networks usernames (many more available: google-plus, flickr, dribbble, pinterest, instagram, tumblr, linkedin, etc.)
+social:
+
+# Postal address (add as many lines as necessary)
+address:
+  - line: 3481 Melrose Place
+  - line: Beverly Hills, CA 90210
+
+# Build settings
+markdown: kramdown
+permalink: pretty
