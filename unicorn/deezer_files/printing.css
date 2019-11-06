@@ -1,0 +1,26 @@
+@media print {
+
+    /* sections we dont want displayed */
+    /* HEADER */
+    #header3, #header2 {
+	display: none;
+    }
+
+    /* SIDEBAR */
+    #aside {
+	display: none;
+    }
+
+    /* FOOTER */
+    #fsidebar2, #fnav, #footer2 {
+	display: none;
+    }
+
+    .wp-socializer, .wpsr-floatbar-float_left {
+	display: none !important;
+    }
+
+    #related, #comment_wrapper {
+	display: none;
+    }
+}
