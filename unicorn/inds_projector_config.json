@@ -1,0 +1,13 @@
+{
+  "embeddings": [
+    {
+      "tensorName": "Unicorn Startup Industries",
+      "tensorShape": [
+        9748,
+        100
+      ],
+      "tensorPath": "https://zhuker.github.io/unicorn/inds_vecs.tsv",
+      "metadataPath": "https://zhuker.github.io/unicorn/inds_meta.tsv"
+    }
+  ]
+}
