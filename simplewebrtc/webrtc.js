@@ -38,7 +38,7 @@ function getQueryVariable(variable) {
 }
 
 function getOurId() {
-    return getQueryVariable("ourid") | Math.floor(Math.random() * (9000 - 10) + 10).toString();
+    return parseInt(getQueryVariable("ourid") || Math.floor(Math.random() * (9000 - 10) + 10).toString());
 }
 
 function resetState() {
