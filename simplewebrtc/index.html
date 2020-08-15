@@ -10,27 +10,33 @@
   Author: Nirbheek Chauhan <nirbheek@centricular.com>
 -->
 <html>
-  <head>
+<head>
     <meta charset="utf-8"/>
     <style>
-      .error { color: red; }
+        .error {
+            color: red;
+        }
     </style>
     <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
     <script src="webrtc.js"></script>
     <script>
-      window.onload = websocketServerConnect;
+        window.onload = websocketServerConnect;
     </script>
-  </head>
+</head>
 
-  <body>
-    <div><video id="stream" autoplay playsinline>Your browser doesn't support video</video></div>
-    <div>Status: <span id="status">unknown</span></div>
-    <div><textarea id="text" cols=40 rows=4></textarea></div>
-    <div>Our id is <b id="peer-id">unknown</b></div>
-    <br/>
-    <div>
-      <div>getUserMedia constraints being used:</div>
-      <div><textarea id="constraints" cols=40 rows=4></textarea></div>
-    </div>
-  </body>
+<body>
+<div>
+    <video id="stream" autoplay playsinline>Your browser doesn't support video</video>
+</div>
+<h1 id="latency_msec">42msec</h1>
+<pre id="uilogpre">empty</pre>
+<div>Status: <span id="status">unknown</span></div>
+<div><textarea id="text" cols=40 rows=4></textarea></div>
+<div>Our id is <b id="peer-id">unknown</b></div>
+<br/>
+<div>
+    <div>getUserMedia constraints being used:</div>
+    <div><textarea id="constraints" cols=40 rows=4></textarea></div>
+</div>
+</body>
 </html>

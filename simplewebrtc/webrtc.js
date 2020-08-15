@@ -13,8 +13,10 @@ var ws_port;
 // Set this to use a specific peer id instead of a random one
 var default_peer_id;
 // Override with your own STUN servers if you want
-var rtc_configuration = {iceServers: [{urls: "stun:stun.services.mozilla.com"},
-                                      {urls: "stun:stun.l.google.com:19302"}]};
+var rtc_configuration = {
+    iceServers: [{urls: "stun:stun.services.mozilla.com"},
+        {urls: "stun:stun.l.google.com:19302"}]
+};
 // The default constraints that will be attempted. Can be overriden by the user.
 var default_constraints = {video: true, audio: false};
 
@@ -75,7 +77,9 @@ function resetVideo() {
     if (local_stream_promise)
         local_stream_promise.then(stream => {
             if (stream) {
-                stream.getTracks().forEach(function (track) { track.stop(); });
+                stream.getTracks().forEach(function (track) {
+                    track.stop();
+                });
             }
         });
 
@@ -96,7 +100,7 @@ function onIncomingSDP(sdp) {
         local_stream_promise.then((stream) => {
             setStatus("Got local stream, creating answer");
             peer_connection.createAnswer()
-            .then(onLocalDescription).catch(setError);
+                .then(onLocalDescription).catch(setError);
         }).catch(setError);
     }).catch(setError);
 }
@@ -104,7 +108,7 @@ function onIncomingSDP(sdp) {
 // Local description was set, send it to peer
 function onLocalDescription(desc) {
     console.log("Got local description: " + JSON.stringify(desc));
-    peer_connection.setLocalDescription(desc).then(function() {
+    peer_connection.setLocalDescription(desc).then(function () {
         setStatus("Sending SDP " + desc.type);
         sdp = {'sdp': peer_connection.localDescription}
         ws_conn.send(JSON.stringify(sdp));
@@ -132,11 +136,10 @@ function onServerMessage(event) {
                 handleIncomingError(event.data);
                 return;
             }
-	    if (event.data.startsWith("OFFER_REQUEST")) {
-	      // The peer wants us to set up and then send an offer
-                  createCall(null).then (generateOffer);
-	    }
-            else {
+            if (event.data.startsWith("OFFER_REQUEST")) {
+                // The peer wants us to set up and then send an offer
+                createCall(null).then(generateOffer);
+            } else {
                 // Handle incoming JSON SDP and ICE messages
                 try {
                     msg = JSON.parse(event.data);
@@ -160,7 +163,7 @@ function onServerMessage(event) {
                 } else {
                     handleIncomingError("Unknown incoming JSON: " + msg);
                 }
-	    }
+            }
     }
 }
 
@@ -220,12 +223,12 @@ function websocketServerConnect() {
     // Fetch the peer id to use
     peer_id = default_peer_id || getOurId();
     ws_port = ws_port || '8443';
-    if (window.location.protocol.startsWith ("file")) {
+    if (window.location.protocol.startsWith("file")) {
         ws_server = ws_server || "127.0.0.1";
-    } else if (window.location.protocol.startsWith ("http")) {
+    } else if (window.location.protocol.startsWith("http")) {
         ws_server = ws_server || window.location.hostname;
     } else {
-        throw new Error ("Don't know how to connect to the signalling server with uri" + window.location);
+        throw new Error("Don't know how to connect to the signalling server with uri" + window.location);
     }
     var ws_url = 'wss://' + ws_server + ':' + ws_port
     setStatus("Connecting to server " + ws_url);
@@ -252,11 +255,20 @@ function errorUserMediaHandler() {
     setError("Browser doesn't support getUserMedia!");
 }
 
-const handleDataChannelOpen = (event) =>{
+TIMESYNC_INTERVAL = null;
+const handleDataChannelOpen = (event) => {
     console.log("dataChannel.OnOpen", event);
+    if (event.target.label === 'timesync') {
+        TIMESYNC_INTERVAL = setInterval(() => {
+            let msec = performance.now() | 0;
+            send_channel.send("" + msec);
+        }, 2000);
+    }
 };
 
-const handleDataChannelMessageReceived = (event) =>{
+VIDEO = null;
+
+const handleDataChannelMessageReceived = (event) => {
     console.log("dataChannel.OnMessage:", event, event.data.type);
 
     setStatus("Received data channel message");
@@ -267,14 +279,60 @@ const handleDataChannelMessageReceived = (event) =>{
     } else {
         console.log('Incoming data message');
     }
-    send_channel.send("Hi! (from browser)");
+    if (event.target.label === 'timesync') {
+        if (TIMESYNC_INTERVAL != null) {
+            clearInterval(TIMESYNC_INTERVAL);
+            TIMESYNC_INTERVAL = null;
+        }
+
+        let my_time_when_i_received = performance.now();
+        let sender_report = JSON.parse(event.data);
+        let my_time_when_i_sent = sender_report['received_time'];
+        let delay = sender_report['delay_since_received'];
+        let rtt = my_time_when_i_received - delay - my_time_when_i_sent;
+
+        if (VIDEO == null) {
+            VIDEO = document.getElementsByTagName('video')[0];
+        }
+
+        VIDEO.requestVideoFrameCallback((now_, framemeta) => {
+            console.log("framemeta", now_, framemeta);
+            let remote_time = (sender_report['local_clock'] + rtt / 2 + (now_ - my_time_when_i_received));
+            let [last_known_frame_time, time_of_frame_msec] = Object.entries(sender_report.track_times_msec)[0][1]
+            let time_since_last_known_frame = remote_time - time_of_frame_msec;
+            let expected_video_time = last_known_frame_time + time_since_last_known_frame;
+            let actual_video_time = (framemeta.rtpTimestamp / 90 | 0);
+            let latency = expected_video_time - actual_video_time;
+            latency_msec.innerText = (latency | 0) + "msec";
+            uilogpre.innerText = ""
+                + "\nnow: " + (my_time_when_i_received | 0) + " " + (now_ | 0)
+                + "\nrtt: " + (rtt | 0)
+                + "\nmy_time_when_i_sent: " + my_time_when_i_sent
+                + "\ntime_since_last_known_frame: " + (time_since_last_known_frame | 0)
+                + "\nlast_known_frame_time: " + last_known_frame_time
+                + "\nexpected_video_time:   " + (expected_video_time | 0)
+                + "\nactual_video_time:     " + (actual_video_time | 0)
+
+            ;
+            if (latency < 0) {
+                console.error("latency: " + (latency | 0) + "msec" + uilogpre.innerText);
+            }
+            setTimeout(() => {
+                let msec = performance.now() | 0;
+                send_channel.send("" + msec);
+            }, 2000);
+        });
+
+
+    }
+    // send_channel.send("Hi! (from browser)");
 };
 
-const handleDataChannelError = (error) =>{
+const handleDataChannelError = (error) => {
     console.log("dataChannel.OnError:", error);
 };
 
-const handleDataChannelClose = (event) =>{
+const handleDataChannelClose = (event) => {
     console.log("dataChannel.OnClose", event);
 };
 
@@ -287,6 +345,23 @@ function onDataChannel(event) {
     receiveChannel.onclose = handleDataChannelClose;
 }
 
+STATS = {}
+let statsHandler = () => {
+    if (peer_connection) {
+        peer_connection.getStats().then((stats) => {
+            console.log("stats", stats);
+            STATS = stats;
+            Array.from(STATS.values()).filter(s => s.type === 'remote-outbound-rtp').forEach((ro) => {
+                console.log('remote outbound', ro);
+            })
+            for (let stat_ in stats.keys()) {
+                console.log("stat", stat_, stats.get(stat_));
+            }
+        });
+    }
+};
+setInterval(statsHandler, 1000);
+
 function createCall(msg) {
     // Reset connection attempts because we connected successfully
     connect_attempts = 0;
@@ -294,7 +369,7 @@ function createCall(msg) {
     console.log('Creating RTCPeerConnection');
 
     peer_connection = new RTCPeerConnection(rtc_configuration);
-    send_channel = peer_connection.createDataChannel('label', null);
+    send_channel = peer_connection.createDataChannel('timesync', null);
     send_channel.onopen = handleDataChannelOpen;
     send_channel.onmessage = handleDataChannelMessageReceived;
     send_channel.onerror = handleDataChannelError;
@@ -313,13 +388,13 @@ function createCall(msg) {
     }
 
     peer_connection.onicecandidate = (event) => {
-	// We have a candidate, send it to the remote party with the
-	// same uuid
-	if (event.candidate == null) {
+        // We have a candidate, send it to the remote party with the
+        // same uuid
+        if (event.candidate == null) {
             console.log("ICE Candidate was null, done");
             return;
-	}
-	ws_conn.send(JSON.stringify({'ice': event.candidate}));
+        }
+        ws_conn.send(JSON.stringify({'ice': event.candidate}));
     };
 
     if (msg != null)
