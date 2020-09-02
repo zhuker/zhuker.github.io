@@ -1,10 +1,9 @@
 /* vim: set sts=4 sw=4 et :
  *
- * Demo Javascript app for negotiating and streaming a sendrecv webrtc stream
- * with a GStreamer app. Runs only in passive mode, i.e., responds to offers
- * with answers, exchanges ICE candidates, and streams.
+ * Based on Demo Javascript app for negotiating and streaming a sendrecv webrtc stream
  *
  * Author: Nirbheek Chauhan <nirbheek@centricular.com>
+ * Author: Alex Zhukov <zhukov.alex@gmail.com>
  */
 
 // Set this to override the automatic detection in websocketServerConnect()
@@ -363,6 +362,7 @@ let statsHandler = () => {
         });
     }
 };
+
 // setInterval(statsHandler, 1000);
 
 function createCall(msg) {
