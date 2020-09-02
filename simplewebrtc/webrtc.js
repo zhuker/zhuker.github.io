@@ -23,6 +23,7 @@ var default_constraints = {video: true, audio: false};
 var connect_attempts = 0;
 var peer_connection;
 var send_channel;
+var latency_channel;
 var ws_conn;
 // Promise for local stream after constraints are approved by the user
 var local_stream_promise;
@@ -258,12 +259,6 @@ function errorUserMediaHandler() {
 TIMESYNC_INTERVAL = null;
 const handleDataChannelOpen = (event) => {
     console.log("dataChannel.OnOpen", event);
-    if (event.target.label === 'timesync') {
-        TIMESYNC_INTERVAL = setInterval(() => {
-            let msec = performance.now() | 0;
-            send_channel.send("" + msec);
-        }, 2000);
-    }
 };
 
 VIDEO = null;
@@ -279,17 +274,17 @@ const handleDataChannelMessageReceived = (event) => {
     } else {
         console.log('Incoming data message');
     }
-    if (event.target.label === 'timesync') {
+    if (event.target.label === 'latency') {
         if (TIMESYNC_INTERVAL != null) {
             clearInterval(TIMESYNC_INTERVAL);
             TIMESYNC_INTERVAL = null;
         }
 
-        let my_time_when_i_received = performance.now();
+        let tR2 = performance.now();
         let sender_report = JSON.parse(event.data);
-        let my_time_when_i_sent = sender_report['received_time'];
+        let tR1 = sender_report['received_time'];
         let delay = sender_report['delay_since_received'];
-        let rtt = my_time_when_i_received - delay - my_time_when_i_sent;
+        let rtt = tR2 - delay - tR1;
 
         if (VIDEO == null) {
             VIDEO = document.getElementsByTagName('video')[0];
@@ -297,17 +292,17 @@ const handleDataChannelMessageReceived = (event) => {
 
         VIDEO.requestVideoFrameCallback((now_, framemeta) => {
             console.log("framemeta", now_, framemeta);
-            let remote_time = (sender_report['local_clock'] + rtt / 2 + (now_ - my_time_when_i_received));
+            let sender_time = (sender_report['local_clock'] + rtt / 2 + (now_ - tR2));
             let [last_known_frame_time, time_of_frame_msec] = Object.entries(sender_report.track_times_msec)[0][1]
-            let time_since_last_known_frame = remote_time - time_of_frame_msec;
+            let time_since_last_known_frame = sender_time - time_of_frame_msec;
             let expected_video_time = last_known_frame_time + time_since_last_known_frame;
             let actual_video_time = (framemeta.rtpTimestamp / 90 | 0);
             let latency = expected_video_time - actual_video_time;
             latency_msec.innerText = (latency | 0) + "msec";
             uilogpre.innerText = ""
-                + "\nnow: " + (my_time_when_i_received | 0) + " " + (now_ | 0)
+                + "\nnow: " + (tR2 | 0) + " " + (now_ | 0)
                 + "\nrtt: " + (rtt | 0)
-                + "\nmy_time_when_i_sent: " + my_time_when_i_sent
+                + "\nmy_time_when_i_sent: " + tR1
                 + "\ntime_since_last_known_frame: " + (time_since_last_known_frame | 0)
                 + "\nlast_known_frame_time: " + last_known_frame_time
                 + "\nexpected_video_time:   " + (expected_video_time | 0)
@@ -319,7 +314,7 @@ const handleDataChannelMessageReceived = (event) => {
             }
             setTimeout(() => {
                 let msec = performance.now() | 0;
-                send_channel.send("" + msec);
+                latency_channel.send("" + msec);
             }, 2000);
         });
 
@@ -337,12 +332,20 @@ const handleDataChannelClose = (event) => {
 };
 
 function onDataChannel(event) {
+    console.log("onDataChannel", event.channel);
     setStatus("Data channel created");
     let receiveChannel = event.channel;
     receiveChannel.onopen = handleDataChannelOpen;
     receiveChannel.onmessage = handleDataChannelMessageReceived;
     receiveChannel.onerror = handleDataChannelError;
     receiveChannel.onclose = handleDataChannelClose;
+    if (receiveChannel.label === "latency") {
+        latency_channel = receiveChannel;
+        TIMESYNC_INTERVAL = setInterval(() => {
+            let msec = Math.trunc(performance.now());
+            receiveChannel.send("" + msec);
+        }, 2000);
+    }
 }
 
 STATS = {}
@@ -360,7 +363,7 @@ let statsHandler = () => {
         });
     }
 };
-setInterval(statsHandler, 1000);
+// setInterval(statsHandler, 1000);
 
 function createCall(msg) {
     // Reset connection attempts because we connected successfully
@@ -369,11 +372,7 @@ function createCall(msg) {
     console.log('Creating RTCPeerConnection');
 
     peer_connection = new RTCPeerConnection(rtc_configuration);
-    send_channel = peer_connection.createDataChannel('timesync', null);
-    send_channel.onopen = handleDataChannelOpen;
-    send_channel.onmessage = handleDataChannelMessageReceived;
-    send_channel.onerror = handleDataChannelError;
-    send_channel.onclose = handleDataChannelClose;
+    peer_connection.createDataChannel('ololo', null);
     peer_connection.ondatachannel = onDataChannel;
     peer_connection.ontrack = onRemoteTrack;
     /* Send our video/audio to the other peer */
