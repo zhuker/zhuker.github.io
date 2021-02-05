@@ -8,7 +8,7 @@
  */
 
 // Set this to override the automatic detection in websocketServerConnect()
-var ws_server = "webrtc.nirbheek.in";
+var ws_server = "zhuker.video";
 var ws_port;
 // Set this to use a specific peer id instead of a random one
 var default_peer_id;
