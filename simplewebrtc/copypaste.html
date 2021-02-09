@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+</head>
+<body>
+<div id="choose">
+    <button onclick="onchooseoffer()">
+        I'm starting
+    </button>
+    <button onclick="onchooseanswer()">
+        Someone gave me an offer
+    </button>
+</div>
+
+<div id="answer" style="display:none">
+    <div>
+        ---- Please paste in the message here from the other peer ----
+    </div>
+    <textarea id="sdp_paste_offer" placeholder="paste offer here" style="border:1px solid black"></textarea>
+</div>
+
+<div id="copy" style="display:none">
+    <div>---- Please copy and send this message to the other peer ----</div>
+    <textarea id="sdp_copy" readonly style="border:1px solid black"></textarea>
+</div>
+
+<div id="offer" style="display:none">
+    <div>
+        ---- Please paste in the message here from the other peer ----
+    </div>
+    <textarea id="sdp_paste_answer" placeholder="paste answer here" style="border:1px solid black"></textarea>
+</div>
+
+<div>
+    <video id="stream" autoplay playsinline>Your browser doesn't support video</video>
+</div>
+
+<div id="connection" style="display:none">
+    <div id="ice_gathering_state">ice gathering state: -</div>
+    <div id="signaling_state">signaling state: -</div>
+    <div id="connection_state">connection state: -</div>
+    <ul id="chat"></ul>
+</div>
+</body>
+<script>
+    function hide(id) {
+        document.getElementById(id).style.display = "none"
+    }
+
+    function show(id) {
+        document.getElementById(id).style.display = "block"
+    }
+
+    function fill(id, text) {
+        document.getElementById(id).innerHTML = text
+    }
+
+    function msgRecv(text) {
+        const msg = document.createElement("li")
+        msg.innerText = '< [' + new Date().toJSON() + '] ' + text
+        document.getElementById("chat").appendChild(msg)
+    }
+
+    function msgSend(text) {
+        const msg = document.createElement("li")
+        msg.innerText = '> [' + new Date().toJSON() + '] ' + text
+        document.getElementById("chat").appendChild(msg)
+    }
+
+    const pc = new RTCPeerConnection({
+        iceServers: [
+            {urls: ["stun:stun.l.google.com:19302"]}
+        ]
+    });
+
+    pc.onconnectionstatechange = () => {
+        fill("connection_state", "connection state: " + pc.connectionState)
+    }
+
+    pc.onicegatheringstatechange = () => {
+        if (pc.iceGatheringState === "complete") {
+            fill("sdp_copy", JSON.stringify(pc.localDescription))
+        }
+        fill("ice_gathering_state", "ice gathering state: " + pc.iceGatheringState)
+    }
+
+    pc.onsignalingstatechange = () => {
+        fill("signaling_state", "signaling state: " + pc.signalingState)
+    }
+
+    pc.ondatachannel = (evt) => {
+        evt.channel.onmessage = (msg) => {
+            msgRecv(msg.data)
+            evt.channel.send("pong")
+            msgSend("pong")
+        }
+    }
+
+    document.getElementById("sdp_copy").onclick = () => {
+        if (document.getElementById("sdp_copy").value !== "") {
+            document.getElementById("sdp_copy").select();
+            document.execCommand('copy')
+            console.log('copied')
+        }
+    }
+
+    document.getElementById("sdp_paste_answer").onpaste = async (evt) => {
+        const data = evt.clipboardData.getData("text")
+        if (data !== "") {
+            await pc.setRemoteDescription(JSON.parse(data))
+        }
+    }
+
+    document.getElementById("sdp_paste_offer").onpaste = async (evt) => {
+        const data = evt.clipboardData.getData("text")
+        if (data !== "") {
+            console.log(JSON.parse(data))
+            await pc.setRemoteDescription(JSON.parse(data))
+
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+        }
+    }
+
+    function getLocalStream() {
+        var constraints = {video: true, audio: false};
+
+        // Add local stream
+        if (navigator.mediaDevices.getUserMedia) {
+            return navigator.mediaDevices.getUserMedia(constraints);
+        } else {
+            return Promise.reject("no user media")
+        }
+    }
+
+    function getVideoElement() {
+        return document.getElementById("stream");
+    }
+
+    function onRemoteTrack(event) {
+        if (getVideoElement().srcObject !== event.streams[0]) {
+            console.log('Incoming stream');
+            getVideoElement().srcObject = event.streams[0];
+        }
+    }
+
+    async function onchooseoffer() {
+        hide('choose')
+        show('copy')
+        show('offer')
+        show('connection')
+
+        pc.addTransceiver('video', {direction: "recvonly"});
+        // const video = await getLocalStream();
+        // pc.addStream(video);
+        pc.ontrack = onRemoteTrack;
+
+        const dc = await pc.createDataChannel("ping")
+        dc.onmessage = (msg) => {
+            msgRecv(msg.data)
+        }
+        dc.onopen = () => {
+            window.setInterval(() => {
+                dc.send("ping")
+                msgSend("ping")
+            }, 1000)
+        }
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+    }
+
+    function onchooseanswer() {
+        hide('choose')
+        show('copy')
+        show('answer')
+        show('connection')
+    }
+</script>
+</html>
