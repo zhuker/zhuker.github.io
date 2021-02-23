@@ -1,14 +1,4 @@
 <!DOCTYPE html>
-<!--
-  vim: set sts=2 sw=2 et :
-
-
-  Demo Javascript app for negotiating and streaming a sendrecv webrtc stream
-  with a GStreamer app. Runs only in passive mode, i.e., responds to offers
-  with answers, exchanges ICE candidates, and streams.
-
-  Author: Nirbheek Chauhan <nirbheek@centricular.com>
--->
 <html>
 <head>
     <meta charset="utf-8"/>
@@ -21,58 +11,33 @@
 </head>
 
 <body>
+<div>Status: <span id="status">unknown</span></div>
+<div>Our id is <b id="peer-id">unknown</b></div>
 <div>
     <video id="stream" autoplay playsinline>Your browser doesn't support video</video>
 </div>
-<div>Status: <span id="status">unknown</span></div>
-<div><textarea id="text" cols=40 rows=4></textarea></div>
-<div>Our id is <b id="peer-id">unknown</b></div>
 <br/>
-<div>
-    <div>getUserMedia constraints being used:</div>
-    <div><textarea id="constraints" cols=40 rows=4></textarea></div>
-</div>
 </body>
 <script>
-    /* vim: set sts=4 sw=4 et :
-   *
-   * Demo Javascript app for negotiating and streaming a sendrecv webrtc stream
-   * with a GStreamer app. Runs only in passive mode, i.e., responds to offers
-   * with answers, exchanges ICE candidates, and streams.
-   *
-   * Author: Nirbheek Chauhan <nirbheek@centricular.com>
-   */
-
-    // Set this to override the automatic detection in websocketServerConnect()
     const ws_url = 'wss://zhuker.video:8443'
-    // Set this to use a specific peer id instead of a random one
     const peer_id = getOurId();
-    // Override with your own STUN servers if you want
-    const rtc_configuration = {
-        iceServers: [
-            {urls: ["stun:stun.l.google.com:19302"]}
-        ]
-    };
-    // The default constraints that will be attempted. Can be overriden by the user.
-    const default_constraints = {video: true, audio: false};
 
     let connect_attempts = 0;
     let peer_connection;
     let send_channel;
     let ws_conn;
-    // Promise for local stream after constraints are approved by the user
     let local_stream_promise;
 
     function getQueryVariable(variable) {
-        var query = window.location.search.substring(1);
-        var vars = query.split('&');
-        for (var i = 0; i < vars.length; i++) {
-            var pair = vars[i].split('=');
-            if (decodeURIComponent(pair[0]) == variable) {
+        const query = window.location.search.substring(1);
+        const vars = query.split('&');
+        for (let i = 0; i < vars.length; i++) {
+            const pair = vars[i].split('=');
+            if (decodeURIComponent(pair[0]) === variable) {
                 return decodeURIComponent(pair[1]);
             }
         }
-        console.log('Query variable %s not found', variable);
+        console.log('Query variable not found', variable);
     }
 
     function getOurId() {
@@ -95,7 +60,7 @@
 
     function setStatus(text) {
         console.log(text);
-        var span = document.getElementById("status")
+        const span = document.getElementById("status");
         // Don't set the status if it already contains an error
         if (!span.classList.contains('error'))
             span.textContent = text;
@@ -103,7 +68,7 @@
 
     function setError(text) {
         console.error(text);
-        var span = document.getElementById("status")
+        const span = document.getElementById("status");
         span.textContent = text;
         span.classList.add('error');
     }
@@ -120,7 +85,7 @@
             });
 
         // Reset the video element and stop showing the last received frame
-        var videoElement = getVideoElement();
+        const videoElement = getVideoElement();
         videoElement.pause();
         videoElement.src = "";
         videoElement.load();
@@ -175,6 +140,7 @@
                     createCall(null).then(generateOffer);
                 } else {
                     // Handle incoming JSON SDP and ICE messages
+                    let msg;
                     try {
                         msg = JSON.parse(event.data);
                     } catch (e) {
@@ -214,26 +180,6 @@
         window.setTimeout(websocketServerConnect, 3000);
     }
 
-    function getLocalStream() {
-        var constraints;
-        var textarea = document.getElementById('constraints');
-        try {
-            constraints = JSON.parse(textarea.value);
-        } catch (e) {
-            console.error(e);
-            setError('ERROR parsing constraints: ' + e.message + ', using default constraints');
-            constraints = default_constraints;
-        }
-        console.log(JSON.stringify(constraints));
-
-        // Add local stream
-        if (navigator.mediaDevices.getUserMedia) {
-            return navigator.mediaDevices.getUserMedia(constraints);
-        } else {
-            errorUserMediaHandler();
-        }
-    }
-
     function websocketServerConnect() {
         connect_attempts++;
         if (connect_attempts > 3) {
@@ -244,10 +190,6 @@
         const span = document.getElementById("status");
         span.classList.remove('error');
         span.textContent = '';
-        // Populate constraints
-        const textarea = document.getElementById('constraints');
-        if (textarea.value === '')
-            textarea.value = JSON.stringify(default_constraints);
         // Fetch the peer id to use
         setStatus("Connecting to server " + ws_url);
         ws_conn = new WebSocket(ws_url);
@@ -320,7 +262,11 @@
 
         console.log('Creating RTCPeerConnection');
 
-        peer_connection = new RTCPeerConnection(rtc_configuration);
+        peer_connection = new RTCPeerConnection({
+            iceServers: [
+                {urls: ["stun:stun.l.google.com:19302"]}
+            ]
+        });
         send_channel = peer_connection.createDataChannel('label', null);
         send_channel.onopen = handleDataChannelOpen;
         send_channel.onmessage = handleDataChannelMessageReceived;
@@ -328,14 +274,8 @@
         send_channel.onclose = handleDataChannelClose;
         peer_connection.ondatachannel = onDataChannel;
         peer_connection.ontrack = onRemoteTrack;
-        /* Send our video/audio to the other peer */
         peer_connection.addTransceiver('video', {direction: "recvonly"});
         local_stream_promise = Promise.resolve();
-        // local_stream_promise = getLocalStream().then((stream) => {
-        //     console.log('Adding local stream');
-        //     peer_connection.addStream(stream);
-        //     return stream;
-        // }).catch(setError);
 
         if (msg != null && !msg.sdp) {
             console.log("WARNING: First message wasn't an SDP message!?");
