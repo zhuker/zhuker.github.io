@@ -13,9 +13,10 @@
 <body>
 <div>Status: <span id="status">unknown</span></div>
 <div>Our id is <b id="peer-id">unknown</b></div>
-<div>
-    <video id="stream" autoplay playsinline>Your browser doesn't support video</video>
-</div>
+<video style="background: darkgrey" id="stream" controls autoplay playsinline>Your browser doesn't support video</video>
+<br/>
+<!-- newer chrome browsers (88+) need user click event to display video -->
+<button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
 <br/>
 </body>
 <script>
@@ -208,38 +209,22 @@
         if (getVideoElement().srcObject !== event.streams[0]) {
             console.log('Incoming stream');
             getVideoElement().srcObject = event.streams[0];
+            play.disabled = false;
         }
     }
 
-    function errorUserMediaHandler() {
-        setError("Browser doesn't support getUserMedia!");
-    }
-
-    const handleDataChannelOpen = (event) => {
-        console.log("dataChannel.OnOpen", event);
-    };
+    const handleDataChannelOpen = (event) => console.log("dataChannel.OnOpen", event);
 
     const handleDataChannelMessageReceived = (event) => {
         console.log("dataChannel.OnMessage:", event, event.data.type);
 
-        setStatus("Received data channel message");
-        if (typeof event.data === 'string' || event.data instanceof String) {
-            console.log('Incoming string message: ' + event.data);
-            textarea = document.getElementById("text")
-            textarea.value = textarea.value + '\n' + event.data
-        } else {
-            console.log('Incoming data message');
-        }
+        setStatus("Received data channel message " + event.data);
         send_channel.send("Hi! (from browser)");
     };
 
-    const handleDataChannelError = (error) => {
-        console.log("dataChannel.OnError:", error);
-    };
+    const handleDataChannelError = (error) => console.log("dataChannel.OnError:", error);
 
-    const handleDataChannelClose = (event) => {
-        console.log("dataChannel.OnClose", event);
-    };
+    const handleDataChannelClose = (event) => console.log("dataChannel.OnClose", event);
 
     function onDataChannel(event) {
         setStatus("Data channel created");
@@ -296,5 +281,11 @@
     }
 
     window.onload = websocketServerConnect;
+
+    function onplayclicked() {
+        getVideoElement().play()
+
+    }
+
 </script>
 </html>
