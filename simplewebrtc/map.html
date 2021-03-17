@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Data Layer: Simple</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=default"></script>
+    <style type="text/css">
+        /* Optional: Makes the sample page fill the window. */
+        html,
+        body {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+    </style>
+
+</head>
+<body>
+<video id="vgopro" src="" controls style="width: 50%"></video>
+<video id="vscreen" src="" controls style="width: 49%; padding: 0"></video>
+<br/>
+<button value="recenter" onclick="recenterClicked()">recenter</button>
+maxrtt: <span id="maxrttlabel">-42</span>msec
+<br/>
+<div id="map" style="display: inline-block; width: 50%; height: 50%"></div>
+<textarea autocomplete="off" spellcheck="false" id="logtext"
+          style="white-space: nowrap; overflow: scroll; display: inline-block; font-family: monospace;width: 49%; height: 50%">Loading log...
+</textarea>
+
+<!-- Async script executes immediately and must be after any DOM elements used in callback. -->
+<script
+        src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAxG4Z1INmwARJKv-NFm1bxulqZuCQiiAA&callback=onMapLoaded&libraries=&v=weekly"
+        async
+></script>
+<script>
+    let request = obj => {
+        return new Promise((resolve, reject) => {
+            let xhr = new XMLHttpRequest();
+            xhr.open(obj.method || "GET", obj.url);
+            if (obj.headers) {
+                Object.keys(obj.headers).forEach(key => {
+                    xhr.setRequestHeader(key, obj.headers[key]);
+                });
+            }
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(xhr.response);
+                } else {
+                    reject(xhr.statusText);
+                }
+            };
+            xhr.onerror = () => reject(xhr.statusText);
+            xhr.send(obj.body);
+        });
+    };
+
+    const searchParams = new URLSearchParams(location.search);
+    const runid = searchParams.get("id") || "run2"
+    let METADATA = {};
+    let sortedfeatures = [];
+    let map = null;
+
+    function initMap() {
+        map = new google.maps.Map(document.getElementById("map"), {
+            zoom: 16,
+            center: {lat: 37.469296, lng: -122.291705},
+        });
+        // NOTE: This uses cross-domain XHR, and may not work on older browsers.
+        map.data.loadGeoJson(
+            METADATA.geoJsonUrl, {}, features => {
+                console.log("geo json loaded", features.length)
+                map.setCenter(features[0].getGeometry().getAt(0))
+                map.data.forEach(feature => {
+                    let time = feature.getProperty("time");
+                    feature.timestamp = Date.parse(time) / 1000;
+                    sortedfeatures.push(feature)
+                });
+                map.data.setStyle(feature => {
+                    let color = feature.getProperty("color") || "lightgray";
+                    return {
+                        fillColor: color,
+                        strokeColor: color,
+                        strokeWeight: 3,
+                    };
+                });
+                sortedfeatures.sort((a, b) => a.timestamp - b.timestamp);
+
+                map.data.addListener("mouseover", e => {
+                    console.log("event", e);
+                    let latlng = e.feature.getGeometry().getAt(0).toString();
+                    let time = e.feature.getProperty("time");
+                    console.log("feature", time, Date.parse(time), latlng);
+                });
+                map.data.addListener("click", e => {
+                    let latlng = e.feature.getGeometry().getAt(0).toString();
+                    let time = e.feature.getProperty("time");
+                    console.log(time)
+                    console.log("max rtt", e.feature.getProperty("maxRttMsec"))
+                    let timestamp = Date.parse(time) / 1000;
+                    let videoTime = timestamp - videoTimeToRealTime;
+                    vgopro.currentTime = videoTime;
+                    vscreen.currentTime = videoTime + METADATA.screenRecordingOffsetSec;
+                });
+            }
+        );
+
+        map.addListener("drag", () => {
+            centerOnTimeUpdate = false;
+        });
+    }
+
+    function onMapLoaded() {
+        request({"url": runid + "/metadata.json"}).then(response => {
+            console.log(response);
+            METADATA = JSON.parse(response);
+            initMap();
+            main();
+        })
+    }
+
+    function main() {
+        console.log(METADATA);
+        vgopro.src = METADATA.goproVideoUrl;
+        vscreen.src = METADATA.screenVideoUrl;
+
+        const videoTimeToRealTime = METADATA.goproTimeToRealTimeSec;
+
+        function binarySearch(arr, x, comparator) {
+            let start = 0, end = arr.length - 1;
+            if (!comparator) {
+                comparator = (a, b) => a - b;
+            }
+
+            while (start <= end) {
+                let mid = Math.floor((start + end) / 2);
+                if (comparator(arr[mid], x) === 0) return [mid, mid];
+                else if (comparator(arr[mid], x) < 0)
+                    start = mid + 1;
+                else
+                    end = mid - 1;
+            }
+
+            return [end, start];
+        }
+
+        let centerOnTimeUpdate = true;
+
+
+        videosLoaded = 0;
+        marker = null;
+
+        function onVideosLoaded() {
+            if (videosLoaded === 2) {
+                if (seekRequestedForVideo == null) {
+                    seekRequestedForVideo = "vgopro";
+                    vgopro.currentTime = 34.6;
+                    vscreen.currentTime = 34.6 + METADATA.screenRecordingOffsetSec;
+                }
+            }
+        }
+
+        vgopro.onloadeddata = x => {
+            console.log("vgopro.onloadeddata");
+            videosLoaded++;
+            onVideosLoaded();
+        };
+        vscreen.onloadeddata = x => {
+            console.log("vscreen.onloadeddata");
+            videosLoaded++;
+            onVideosLoaded();
+        };
+        seekRequestedForVideo = null;
+        vgopro.onseeked = x => {
+            console.log('gopro seeked', seekRequestedForVideo);
+            if (seekRequestedForVideo === "vgopro") {
+                seekRequestedForVideo = null;
+            }
+        }
+        vgopro.onseeking = x => {
+            console.log('gopro seeking', seekRequestedForVideo);
+            if (seekRequestedForVideo == null) {
+                seekRequestedForVideo = "vgopro";
+                vscreen.currentTime = vgopro.currentTime + METADATA.screenRecordingOffsetSec;
+            }
+        }
+        vgopro.onplay = x => vscreen.play();
+        vgopro.onpause = x => vscreen.pause();
+
+        vscreen.onplay = x => vgopro.play();
+        vscreen.onpause = x => vgopro.pause();
+
+        vscreen.onseeking = x => {
+            console.log('vscreen seeking', seekRequestedForVideo);
+            if (seekRequestedForVideo == null) {
+                seekRequestedForVideo = "vscreen";
+                vgopro.currentTime = vscreen.currentTime - METADATA.screenRecordingOffsetSec;
+            }
+        }
+        vscreen.onseeked = x => {
+            console.log('vscreen seeked', seekRequestedForVideo);
+            if (seekRequestedForVideo === "vscreen") {
+                seekRequestedForVideo = null;
+            }
+        }
+
+        function timestampComparator(a, b) {
+            return a.timestamp - b;
+        }
+
+        function centerMapOnVideoTime() {
+            let realTime = vgopro.currentTime + videoTimeToRealTime;
+            let find = binarySearch(sortedfeatures, realTime, timestampComparator);
+            if (find[0] >= 0) {
+                let feature = sortedfeatures[find[0]];
+                let pos = feature.getGeometry().getAt(0);
+                map.setCenter(pos);
+                maxrttlabel.innerHTML = feature.getProperty("maxRttMsec")
+                if (marker == null) {
+                    marker = new google.maps.Marker({
+                        position: pos, map: map, icon: {
+                            path: google.maps.SymbolPath.CIRCLE,
+                            scale: 4,
+                        },
+                    })
+                } else {
+                    marker.setPosition(pos);
+                }
+            }
+        }
+
+        vgopro.ontimeupdate = x => {
+            // if (!centerOnTimeUpdate) return;
+            centerMapOnVideoTime()
+
+            let linenum = binarySearch(timestampedlines, vgopro.currentTime + videoTimeToRealTime, (tsline, t) => tsline[0] - t)[0];
+            console.log(linenum, loglines);
+            if (!(loglines[0] <= linenum && linenum < loglines[1])) {
+                console.log("showLogLines");
+                showLogLines(linenum - 1000, linenum + 1000);
+            }
+            jumpToLine(linenum);
+        };
+        document.body.onkeydown = e => {
+            if ("ArrowRight" === e.key || "l" === e.key) {
+                vscreen.currentTime += (1001 / 30000);
+                vgopro.currentTime += (1001 / 30000);
+            }
+            if ("ArrowLeft" === e.key || "j" === e.key) {
+                vscreen.currentTime -= (1001 / 30000);
+                vgopro.currentTime -= (1001 / 30000);
+            }
+        }
+
+        function recenterClicked() {
+            centerOnTimeUpdate = true;
+            centerMapOnVideoTime()
+        }
+
+        let timestampedlines = [];
+        let rttByTimestamp = [];
+
+        //[start, end)
+        let loglines = [0, 0];
+
+        function showLogLines(start, end) {
+            let text = "";
+            end = Math.min(timestampedlines.length, end);
+            for (let i = start; i < end; i++) {
+                text += timestampedlines[i][1] + "\n";
+            }
+            logtext.textContent = text;
+            loglines = [start, end];
+        }
+
+        function loadLog() {
+            let req = new XMLHttpRequest();
+            req.onreadystatechange = () => {
+                console.log(req);
+                if (req.readyState === 4 && req.status === 200) {
+                    let lines = req.responseText.split("\n")
+                    let last_ts = 0;
+                    lines.forEach((line) => {
+                        let ts = Date.parse(line.substr(0, 23) + "Z") / 1000;
+                        if (isNaN(ts)) {
+                            ts = last_ts;
+                        }
+                        timestampedlines.push([ts, line]);
+                        let match = line.match(/rtt ([0-9]+) msec/);
+                        if (match != null) {
+                            let rtt = parseInt(match[1]);
+                            if (rtt !== 140611439004001) {
+                                // buggy kinesis rtt reporting
+                                rttByTimestamp.push([ts, rtt]);
+                            }
+                        }
+                        last_ts = ts;
+                    });
+                    showLogLines(0, 4000);
+                }
+            };
+            req.open("GET", METADATA.logUrl);
+            req.send();
+        }
+
+        loadLog();
+
+        function findLineByRealTime(timestamp) {
+            return timestampedlines[binarySearch(timestampedlines, timestamp, (tsline, ts) => tsline[0] - ts)[0]];
+        }
+
+        function jumpToLine(jumpLine) {
+            let textBox = document.getElementById('logtext');
+            let scrolledText = '';
+            let start = loglines[0];
+            let end = loglines[1];
+            for (let i = start; i < end && i < jumpLine; ++i) {
+                scrolledText += timestampedlines[i][1] + "\n";
+            }
+            textBox.focus();
+            if (textBox.setSelectionRange) {
+                textBox.setSelectionRange(scrolledText.length, scrolledText.length);
+                let scrollPre = document.createElement('pre');
+                textBox.parentNode.appendChild(scrollPre);
+                let style = window.getComputedStyle(textBox, '');
+                scrollPre.style.lineHeight = style.lineHeight;
+                scrollPre.style.fontFamily = style.fontFamily;
+                scrollPre.style.fontSize = style.fontSize;
+                scrollPre.style.padding = 0;
+                scrollPre.style.border = style.border;
+                scrollPre.style.outline = style.outline;
+                scrollPre.style.overflow = 'scroll';
+                scrollPre.style.letterSpacing = style.letterSpacing;
+                try {
+                    scrollPre.style.whiteSpace = "-moz-pre-wrap"
+                } catch (e) {
+                }
+                try {
+                    scrollPre.style.whiteSpace = "-o-pre-wrap"
+                } catch (e) {
+                }
+                try {
+                    scrollPre.style.whiteSpace = "-pre-wrap"
+                } catch (e) {
+                }
+                try {
+                    scrollPre.style.whiteSpace = "pre-wrap"
+                } catch (e) {
+                }
+                scrollPre.textContent = scrolledText;
+                textBox.scrollTop = scrollPre.scrollHeight;
+                scrollPre.parentNode.removeChild(scrollPre);
+            } else if (textBox.createTextRange) {
+                let range = textBox.createTextRange();
+                range.collapse(true);
+                range.moveEnd('character', scrolledText.length);
+                range.moveStart('character', scrolledText.length);
+                range.select();
+            }
+        }
+    }
+</script>
+</body>
+</html>
