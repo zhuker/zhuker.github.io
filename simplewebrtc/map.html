@@ -97,7 +97,7 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
                     console.log(time)
                     console.log("max rtt", e.feature.getProperty("maxRttMsec"))
                     let timestamp = Date.parse(time) / 1000;
-                    let videoTime = timestamp - videoTimeToRealTime;
+                    let videoTime = timestamp - METADATA.goproTimeToRealTimeSec;
                     vgopro.currentTime = videoTime;
                     vscreen.currentTime = videoTime + METADATA.screenRecordingOffsetSec;
                 });
@@ -123,7 +123,6 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
         vgopro.src = METADATA.goproVideoUrl;
         vscreen.src = METADATA.screenVideoUrl;
 
-        const videoTimeToRealTime = METADATA.goproTimeToRealTimeSec;
 
         function binarySearch(arr, x, comparator) {
             let start = 0, end = arr.length - 1;
@@ -208,7 +207,7 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
         }
 
         function centerMapOnVideoTime() {
-            let realTime = vgopro.currentTime + videoTimeToRealTime;
+            let realTime = vgopro.currentTime + METADATA.goproTimeToRealTimeSec;
             let find = binarySearch(sortedfeatures, realTime, timestampComparator);
             if (find[0] >= 0) {
                 let feature = sortedfeatures[find[0]];
@@ -232,7 +231,7 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
             // if (!centerOnTimeUpdate) return;
             centerMapOnVideoTime()
 
-            let linenum = binarySearch(timestampedlines, vgopro.currentTime + videoTimeToRealTime, (tsline, t) => tsline[0] - t)[0];
+            let linenum = binarySearch(timestampedlines, vgopro.currentTime + METADATA.goproTimeToRealTimeSec, (tsline, t) => tsline[0] - t)[0];
             console.log(linenum, loglines);
             if (!(loglines[0] <= linenum && linenum < loglines[1])) {
                 console.log("showLogLines");
