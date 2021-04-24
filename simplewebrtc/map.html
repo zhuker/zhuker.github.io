@@ -232,7 +232,6 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
             centerMapOnVideoTime()
 
             let linenum = binarySearch(timestampedlines, vgopro.currentTime + METADATA.goproTimeToRealTimeSec, (tsline, t) => tsline[0] - t)[0];
-            console.log(linenum, loglines);
             if (!(loglines[0] <= linenum && linenum < loglines[1])) {
                 console.log("showLogLines");
                 showLogLines(linenum - 1000, linenum + 1000);

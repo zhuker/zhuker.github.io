@@ -1,0 +1,8 @@
+{
+  "screenRecordingOffsetSec": -4.0115833333333343,
+  "goproTimeToRealTimeSec": 1619204909.506  ,
+  "goproVideoUrl": "https://storage.googleapis.com/zhukervideo/dualcarrier3/gopro720_30.mp4",
+  "screenVideoUrl": "https://storage.googleapis.com/zhukervideo/dualcarrier3/screen720.mp4",
+  "logUrl": "https://storage.googleapis.com/zhukervideo/dualcarrier3/log.txt",
+  "geoJsonUrl": "dualcarrier3/geosplit_rtt.json"
+}
