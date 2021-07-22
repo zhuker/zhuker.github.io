@@ -231,7 +231,8 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
             // if (!centerOnTimeUpdate) return;
             centerMapOnVideoTime()
 
-            let linenum = binarySearch(timestampedlines, vgopro.currentTime + METADATA.goproTimeToRealTimeSec, (tsline, t) => tsline[0] - t)[0];
+            let realtime = vgopro.currentTime + METADATA.goproTimeToRealTimeSec;
+            let linenum = binarySearch(timestampedlines, realtime, (tsline, t) => tsline[0] - t)[0];
             if (!(loglines[0] <= linenum && linenum < loglines[1])) {
                 console.log("showLogLines");
                 showLogLines(linenum - 1000, linenum + 1000);
@@ -278,18 +279,31 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
                     let lines = req.responseText.split("\n")
                     let last_ts = 0;
                     lines.forEach((line) => {
-                        let ts = Date.parse(line.substr(0, 23) + "Z") / 1000;
-                        if (isNaN(ts)) {
-                            ts = last_ts;
+                        let ts = 0
+                        if (line.indexOf("ts=") >= 0) {
+                            let s = line.substr(line.indexOf("ts="));
+                            let string = s.split(/[=,]/)[1];
+                            ts = parseFloat(string)
+                        } else if (line.match(/^\d+-\d+-\d+ \d+:\d+:\d+.\d+/) != null){
+                            //2021-04-23 19:08:26.283
+                            let timestamp = line.substr(0, 23) + "Z";
+                            ts = Date.parse(timestamp) / 1000;
+                            if (isNaN(ts)) {
+                                ts = last_ts;
+                            }
                         }
                         timestampedlines.push([ts, line]);
                         let match = line.match(/rtt ([0-9]+) msec/);
-                        if (match != null) {
-                            let rtt = parseInt(match[1]);
-                            if (rtt !== 140611439004001) {
-                                // buggy kinesis rtt reporting
-                                rttByTimestamp.push([ts, rtt]);
-                            }
+                        let rtt = 140611439004001 // buggy kinesis rtt reporting
+
+                        if (match == null && line.indexOf("rtt_in_ms=") >= 0) {
+                            //ts=1626902197421.000000,type=rtcp_stats,rtt_in_ms=53.405762
+                            rtt = parseFloat(line.substr(line.indexOf("rtt_in_ms=")).split(/[=,]/)[1])
+                        } else if (match != null) {
+                            rtt = parseInt(match[1]);
+                        }
+                        if (rtt !== 140611439004001) {
+                            rttByTimestamp.push([ts, rtt]);
                         }
                         last_ts = ts;
                     });
