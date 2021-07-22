@@ -279,18 +279,18 @@ maxrtt: <span id="maxrttlabel">-42</span>msec
                     let lines = req.responseText.split("\n")
                     let last_ts = 0;
                     lines.forEach((line) => {
-                        let ts = 0
+                        let ts = NaN;
                         if (line.indexOf("ts=") >= 0) {
                             let s = line.substr(line.indexOf("ts="));
                             let string = s.split(/[=,]/)[1];
-                            ts = parseFloat(string)
+                            ts = parseFloat(string) / 1000;
                         } else if (line.match(/^\d+-\d+-\d+ \d+:\d+:\d+.\d+/) != null){
                             //2021-04-23 19:08:26.283
                             let timestamp = line.substr(0, 23) + "Z";
                             ts = Date.parse(timestamp) / 1000;
-                            if (isNaN(ts)) {
-                                ts = last_ts;
-                            }
+                        }
+                        if (isNaN(ts)) {
+                            ts = last_ts;
                         }
                         timestampedlines.push([ts, line]);
                         let match = line.match(/rtt ([0-9]+) msec/);
