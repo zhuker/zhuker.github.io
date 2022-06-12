@@ -241,7 +241,14 @@ Local Candidates
         }
     }
 
-    const handleDataChannelOpen = (event) => console.log("dataChannel.OnOpen", event);
+    let dataChannel = null;
+    let pingTimer = null;
+
+    const handleDataChannelOpen = (event) => {
+        console.log("dataChannel.OnOpen", event);
+        dataChannel = event.target;
+        // pingTimer = setInterval(() => dataChannel.send("ping"), 2000);
+    };
 
     const handleDataChannelMessageReceived = (event) => {
         console.log("dataChannel.OnMessage:", event, event.data.type);
@@ -296,6 +303,41 @@ Local Candidates
             console.log('onicegatheringstatechange', peer_connection.iceGatheringState);
             if (peer_connection.iceGatheringState === "complete") {
                 ws_conn.send(JSON.stringify(peer_connection.localDescription));
+            }
+        }
+        peer_connection.onicecandidate = e => {
+            console.log("onicecandidate", e)
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog && e.candidate && e.candidate.address) {
+                candidatesLog.innerText += e.candidate.address + ":" + e.candidate.port + "\n";
+            }
+        }
+        peer_connection.oniceconnectionstatechange = e => {
+            console.log("oniceconnectionstatechange", e)
+            ///peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += "iceConnectionState: " + peer_connection.iceConnectionState + "\n";
+            }
+        }
+
+        peer_connection.onconnectionstatechange = e => {
+            console.log("onconnectionstatechange", e)
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += "connectionState: " + peer_connection.connectionState + "\n";
+                if (peer_connection.connectionState === "connected") {
+                    let pair = peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+                    if (pair.local && pair.remote) {
+                        let x = ""+pair.local.address+"";
+                        console.log(x);
+                        candidatesLog.innerText += "local candidate: " + x + ":" + pair.local.port + "\n";
+                        candidatesLog.innerText += "remote candidate: " + pair.remote.address + ":" + pair.remote.port + "\n";
+
+                    } else {
+                        candidatesLog.innerText += "candidate pair: " + JSON.stringify(pair) + "\n";
+                    }
+                }
             }
         }
 
