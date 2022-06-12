@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html xmlns="http://www.w3.org/1999/html">
 <head>
     <meta charset="utf-8"/>
     <style>
@@ -13,11 +13,16 @@
 <body>
 <div>Status: <span id="status">unknown</span></div>
 <div>Our id is <b id="peer-id">unknown</b></div>
+<br/>
+<input type="checkbox" id="no_stun_checkbox">No STUN (local only)
+<br/>
 <video style="background: darkgrey" id="stream" controls autoplay playsinline>Your browser doesn't support video</video>
 <br/>
 <!-- newer chrome browsers (88+) need user click event to display video -->
 <button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
 <br/>
+Local Candidates
+<pre id="candidates"></pre>
 </body>
 <script>
     const ws_url = 'wss://zhuker.video:8443'
@@ -28,6 +33,7 @@
     let send_channel;
     let ws_conn;
     let local_stream_promise;
+    let iceServers = [{urls: ["stun:stun.l.google.com:19302"]}];
 
     function getQueryVariable(variable) {
         const query = window.location.search.substring(1);
@@ -44,6 +50,23 @@
     function getOurId() {
         return parseInt(getQueryVariable("ourid") || Math.floor(Math.random() * (9000 - 10) + 10).toString());
     }
+
+    function useStun() {
+        return "false" !== getQueryVariable("usestun") || !document.getElementById("no_stun_checkbox").checked
+    }
+    document.getElementById("no_stun_checkbox").onchange = e=> {
+        console.log(e);
+        if (e.target.checked) {
+            iceServers = [];
+        } else {
+            iceServers = [{urls: ["stun:stun.l.google.com:19302"]}];
+        }
+    }
+    if ("false" === getQueryVariable("usestun")) {
+        iceServers = [];
+        document.getElementById("no_stun_checkbox").checked = true;
+    }
+
 
     function resetState() {
         // This will call onServerClose()
@@ -122,7 +145,12 @@
     // ICE candidate received from peer, add it to the peer connection
     function onIncomingICE(ice) {
         const candidate = new RTCIceCandidate(ice);
+        let candidatesLog = document.getElementById("candidates");
+        if (candidatesLog) {
+            candidatesLog.innerText += candidate.address+":"+candidate.port+"\n";
+        }
         peer_connection.addIceCandidate(candidate).catch(setError);
+
     }
 
     function onServerMessage(event) {
@@ -213,7 +241,14 @@
         }
     }
 
-    const handleDataChannelOpen = (event) => console.log("dataChannel.OnOpen", event);
+    let dataChannel = null;
+    let pingTimer = null;
+
+    const handleDataChannelOpen = (event) => {
+        console.log("dataChannel.OnOpen", event);
+        dataChannel = event.target;
+        // pingTimer = setInterval(() => dataChannel.send("ping"), 2000);
+    };
 
     const handleDataChannelMessageReceived = (event) => {
         console.log("dataChannel.OnMessage:", event, event.data.type);
@@ -248,9 +283,7 @@
         console.log('Creating RTCPeerConnection');
 
         peer_connection = new RTCPeerConnection({
-            iceServers: [
-                {urls: ["stun:stun.l.google.com:19302"]}
-            ]
+            iceServers: iceServers
         });
         send_channel = peer_connection.createDataChannel('label', null);
         send_channel.onopen = handleDataChannelOpen;
@@ -270,6 +303,41 @@
             console.log('onicegatheringstatechange', peer_connection.iceGatheringState);
             if (peer_connection.iceGatheringState === "complete") {
                 ws_conn.send(JSON.stringify(peer_connection.localDescription));
+            }
+        }
+        peer_connection.onicecandidate = e => {
+            console.log("onicecandidate", e)
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog && e.candidate && e.candidate.address) {
+                candidatesLog.innerText += e.candidate.address + ":" + e.candidate.port + "\n";
+            }
+        }
+        peer_connection.oniceconnectionstatechange = e => {
+            console.log("oniceconnectionstatechange", e)
+            ///peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += "iceConnectionState: " + peer_connection.iceConnectionState + "\n";
+            }
+        }
+
+        peer_connection.onconnectionstatechange = e => {
+            console.log("onconnectionstatechange", e)
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += "connectionState: " + peer_connection.connectionState + "\n";
+                if (peer_connection.connectionState === "connected") {
+                    let pair = peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+                    if (pair.local && pair.remote) {
+                        let x = ""+pair.local.address+"";
+                        console.log(x);
+                        candidatesLog.innerText += "local candidate: " + x + ":" + pair.local.port + "\n";
+                        candidatesLog.innerText += "remote candidate: " + pair.remote.address + ":" + pair.remote.port + "\n";
+
+                    } else {
+                        candidatesLog.innerText += "candidate pair: " + JSON.stringify(pair) + "\n";
+                    }
+                }
             }
         }
 
