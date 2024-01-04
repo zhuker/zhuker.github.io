@@ -234,20 +234,32 @@ Local Candidates
     }
 
     function onRemoteTrack(event) {
+        console.log('onRemoteTrack', event);
         if (getVideoElement().srcObject !== event.streams[0]) {
-            console.log('Incoming stream');
-            getVideoElement().srcObject = event.streams[0];
+            console.log('Incoming stream', event);
+            console.log('Incoming stream', event.streams);
+            console.log('Incoming track', event.track);
+            if (event.streams && event.streams.length !== 0) {
+                getVideoElement().srcObject = event.streams[0];
+            } else {
+                getVideoElement().srcObject = new MediaStream([event.track])
+            }
             play.disabled = false;
         }
     }
 
     let dataChannel = null;
     let pingTimer = null;
+    let pingCounter = 0
 
     const handleDataChannelOpen = (event) => {
         console.log("dataChannel.OnOpen", event);
         dataChannel = event.target;
-        // pingTimer = setInterval(() => dataChannel.send("ping"), 2000);
+        pingTimer = setInterval(() => {
+            let msg = "ping"+pingCounter;
+            pingCounter++;
+            return dataChannel.send(msg);
+        }, 2000);
     };
 
     const handleDataChannelMessageReceived = (event) => {
