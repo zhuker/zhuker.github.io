@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/html">
+<head>
+    <meta charset="utf-8"/>
+    <style>
+        .error {
+            color: red;
+        }
+    </style>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+</head>
+
+<body>
+<div>Status: <span id="status">unknown</span></div>
+<div>Our id is <b id="peer-id">unknown</b></div>
+<br/>
+<input type="checkbox" id="no_stun_checkbox">No STUN (local only)
+<br/>
+<div id="streamHolder"
+     style="  display: flex;  justify-content: center;  align-items: center;  width: 100%;  height: 100%;  background: black;">
+    <video style="  max-width: 100%;  max-height: 100%;  object-fit: contain;" id="stream" autoplay playsinline>Your
+        browser doesn't support video
+    </video>
+</div>
+<br/>
+<!-- newer chrome browsers (88+) need user click event to display video -->
+<button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
+<button disabled id="fullscreenButton" name="fullscreen" value="fullscreen" onclick="onfullscreenClicked()">fullscreen</button>
+<br/>
+Local Candidates
+<pre id="candidates"></pre>
+</body>
+<script>
+    function onplayclicked() {
+        getVideoElement().play()
+    }
+    function onfullscreenClicked() {
+        getVideoElement().play()
+        streamHolder.requestFullscreen()
+    }
+
+    class SimpleWebsocketSignaling {
+        static ProtoState = {
+            NONE: 'NONE',
+            CONNECTED: 'CONNECTED',
+            HELLO: 'HELLO',
+            ROOM_REQUESTED: 'ROOM_REQUESTED',
+            ROOM_OK: 'ROOM_OK',
+            FAILED: 'FAILED',
+        };
+
+        static PeerState = {
+            UNKNOWN: 'UNKNOWN',
+            SENT_OFFER_REQUEST: 'SENT_OFFER_REQUEST',
+            SENT_OFFER: 'SENT_OFFER',
+            RECEIVED_OFFER_REQUEST: 'RECEIVED_OFFER_REQUEST',
+            OFFER_RECEIVED: 'OFFER_RECEIVED',
+            ANSWER_RECEIVED: 'ANSWER_RECEIVED',
+            ANSWER_SENT: 'ANSWER_SENT',
+        };
+
+        constructor(serverUrl, ourId, remoteId, offer) {
+            this.serverUrl = serverUrl;
+            this._ourId = ourId;
+            this._remoteId = remoteId;
+            this._offer = !!offer;
+
+            this.wsClient = null;
+            this.state = SimpleWebsocketSignaling.ProtoState.NONE;
+            this.peerStates = new Map();
+            this._onOfferReceived = (offerStr) => this.debug('onOffer', offerStr);
+            this.onAnswerReceived = new Map(); // peerId -> callback
+
+            this._onConnect = null;
+            this._onDisconnect = null;
+        }
+
+        debug(...args) {
+            console.log('[Signaling]', ...args);
+        }
+
+        sendUtf8(str) {
+            this.debug('>', str);
+            if (this.wsClient && this.wsClient.readyState === WebSocket.OPEN) {
+                this.wsClient.send(str);
+            } else {
+                this.debug('WebSocket not open, failed to send:', str);
+            }
+        }
+
+        connect(onConnect, onDisconnect) {
+            this._onConnect = onConnect;
+            this._onDisconnect = onDisconnect;
+
+            try {
+                this.wsClient = new WebSocket(this.serverUrl);
+
+                this.wsClient.onopen = () => {
+                    this.debug('onOpen');
+                    this.state = SimpleWebsocketSignaling.ProtoState.CONNECTED;
+                    this.sendUtf8(`HELLO ${this._ourId}`);
+                };
+
+                this.wsClient.onmessage = (event) => {
+                    const str = event.data;
+                    this.debug('<', str);
+
+                    // handle states
+                    if (this.state === SimpleWebsocketSignaling.ProtoState.CONNECTED) {
+                        if (str !== 'HELLO') {
+                            this.state = SimpleWebsocketSignaling.ProtoState.FAILED;
+                            this._onConnect?.(false, this._remoteId);
+                            return;
+                        } else {
+                            this.state = SimpleWebsocketSignaling.ProtoState.HELLO;
+                        }
+                    }
+
+                    if (this.state === SimpleWebsocketSignaling.ProtoState.HELLO) {
+                        let roomid = 'Room' + (this._offer ? this._ourId : this._remoteId);
+                        this.debug('joining room', roomid);
+                        this.sendUtf8(`ROOM ${roomid}`);
+                        this.state = SimpleWebsocketSignaling.ProtoState.ROOM_REQUESTED;
+                        return;
+                    }
+
+                    if (this.state === SimpleWebsocketSignaling.ProtoState.ROOM_REQUESTED) {
+                        if (str.startsWith('ROOM_OK')) {
+                            this.debug('joined room');
+                            this.state = SimpleWebsocketSignaling.ProtoState.ROOM_OK;
+                            if (!this._offer) {
+                                this._onConnect?.(true, this._remoteId);
+                            }
+                        } else {
+                            this.debug('dont know what to do with', str);
+                            this.state = SimpleWebsocketSignaling.ProtoState.FAILED;
+                        }
+                        return;
+                    }
+
+                    if (this.state === SimpleWebsocketSignaling.ProtoState.ROOM_OK) {
+                        if (str.startsWith('ROOM_PEER_JOINED')) {
+                            return;
+                        }
+                        if (str.startsWith('ROOM_PEER_LEFT')) {
+                            const tokens = str.split(' ', 2);
+                            const peerId = tokens[1];
+                            this._onDisconnect?.(peerId);
+                            return;
+                        }
+
+                        if (str.startsWith('ROOM_PEER_MSG')) {
+                            const tokens = str.split(' ', 3);
+                            const remoteId = tokens[1];
+                            const remoteMsg = str.replace(/^\s*\S+\s+\S+\s*/, ''); //split(' ', 3);
+                            const peerState =
+                                this.peerStates.get(remoteId) ||
+                                SimpleWebsocketSignaling.PeerState.UNKNOWN;
+
+                            if (remoteMsg === 'OFFER_REQUEST') {
+                                this.peerStates.set(
+                                    remoteId,
+                                    SimpleWebsocketSignaling.PeerState.RECEIVED_OFFER_REQUEST
+                                );
+                                if (this._offer) this._onConnect?.(true, remoteId);
+                            } else if (
+                                peerState === SimpleWebsocketSignaling.PeerState.SENT_OFFER_REQUEST
+                            ) {
+                                this.peerStates.set(
+                                    remoteId,
+                                    SimpleWebsocketSignaling.PeerState.OFFER_RECEIVED
+                                );
+                                this._onOfferReceived(remoteMsg);
+                            } else if (
+                                peerState === SimpleWebsocketSignaling.PeerState.SENT_OFFER
+                            ) {
+                                this.peerStates.set(
+                                    remoteId,
+                                    SimpleWebsocketSignaling.PeerState.ANSWER_RECEIVED
+                                );
+                                const cb = this.onAnswerReceived.get(remoteId);
+                                cb?.(remoteMsg);
+                            } else {
+                                this.debug('dont know what to do with', remoteMsg);
+                            }
+                        }
+                    }
+                };
+
+                this.wsClient.onclose = () => this.debug('onClosed');
+                this.wsClient.onerror = (e) => this.debug('onFailure', e);
+            } catch (err) {
+                this.debug('connect error', err);
+            }
+        }
+
+        sendOffer(remoteId, sdp) {
+            const peerState = this.peerStates.get(remoteId);
+            if (
+                peerState ===
+                SimpleWebsocketSignaling.PeerState.RECEIVED_OFFER_REQUEST
+            ) {
+                this.peerStates.set(remoteId, SimpleWebsocketSignaling.PeerState.SENT_OFFER);
+                this.sendUtf8(`ROOM_PEER_MSG ${remoteId} ${sdp}`);
+            } else {
+                this.debug(
+                    'sendOffer unexpected state',
+                    this.state,
+                    'peer',
+                    peerState
+                );
+            }
+        }
+
+        receiveOffer(onOfferReceived) {
+            this._onOfferReceived = onOfferReceived;
+            if (this.state === SimpleWebsocketSignaling.ProtoState.ROOM_OK) {
+                this.debug('sending OFFER_REQUEST to', this._remoteId);
+                this.sendUtf8(`ROOM_PEER_MSG ${this._remoteId} OFFER_REQUEST`);
+                this.peerStates.set(
+                    this._remoteId,
+                    SimpleWebsocketSignaling.PeerState.SENT_OFFER_REQUEST
+                );
+            } else {
+                this.debug('receiveOffer unexpected state', this.state);
+            }
+        }
+
+        sendAnswer(sdp) {
+            const peerState = this.peerStates.get(this._remoteId);
+            if (peerState === SimpleWebsocketSignaling.PeerState.OFFER_RECEIVED) {
+                this.peerStates.set(
+                    this._remoteId,
+                    SimpleWebsocketSignaling.PeerState.ANSWER_SENT
+                );
+                this.sendUtf8(`ROOM_PEER_MSG ${this._remoteId} ${sdp}`);
+            } else {
+                this.debug('sendAnswer unexpected state', peerState);
+            }
+        }
+
+        receiveAnswer(peer, onAnswerReceived) {
+            this.onAnswerReceived.set(peer, onAnswerReceived);
+        }
+
+        close() {
+            if (this.wsClient) {
+                this.wsClient.close();
+                this.wsClient = null;
+            }
+            this.state = SimpleWebsocketSignaling.ProtoState.NONE;
+        }
+    }
+
+    let connect_attempts = 0;
+    let peer_connection;
+    let iceServers = [{urls: ["stun:stun.l.google.com:19302"]}];
+
+    function getQueryVariable(variable) {
+        const query = window.location.search.substring(1);
+        const vars = query.split('&');
+        for (let i = 0; i < vars.length; i++) {
+            const pair = vars[i].split('=');
+            if (decodeURIComponent(pair[0]) === variable) {
+                return decodeURIComponent(pair[1]);
+            }
+        }
+        console.log('Query variable not found', variable);
+    }
+
+    function getOurId() {
+        return parseInt(getQueryVariable("ourid") || Math.floor(Math.random() * (9000 - 10) + 10).toString());
+    }
+
+    const remoteid = getQueryVariable("remoteid")
+    const ourid = getOurId();
+
+    const receiverWs = new SimpleWebsocketSignaling("wss://zhuker.video:8443", ourid, remoteid, false)
+
+    function getVideoElement() {
+        return document.getElementById("stream");
+    }
+
+    let dataChannel = null;
+    let pingTimer = null;
+    let pingCounter = 0
+
+    const handleDataChannelOpen = (event) => {
+        console.log("dataChannel.OnOpen", event);
+        dataChannel = event.target;
+        pingTimer = setInterval(() => {
+            const msg = "ping" + pingCounter;
+            pingCounter++;
+            return dataChannel.send(msg);
+        }, 2000);
+    };
+
+    const handleDataChannelMessageReceived = (event) => {
+        console.log("dataChannel.OnMessage:", event, event.data.type);
+        setStatus("Received data channel message " + event.data);
+    };
+
+    const handleDataChannelError = (error) => console.log("dataChannel.OnError:", error);
+
+    const handleDataChannelClose = (event) => console.log("dataChannel.OnClose", event);
+
+    function onDataChannel(event) {
+        setStatus("Data channel created");
+        let receiveChannel = event.channel;
+        receiveChannel.onopen = handleDataChannelOpen;
+        receiveChannel.onmessage = handleDataChannelMessageReceived;
+        receiveChannel.onerror = handleDataChannelError;
+        receiveChannel.onclose = handleDataChannelClose;
+    }
+
+    function resetVideo() {
+        // Reset the video element and stop showing the last received frame
+        const videoElement = getVideoElement();
+        videoElement.pause();
+        videoElement.src = "";
+        videoElement.load();
+    }
+
+    function setStatus(text) {
+        console.log(text);
+        const span = document.getElementById("status");
+        // Don't set the status if it already contains an error
+        if (!span.classList.contains('error'))
+            span.textContent = text;
+    }
+
+    function setError(text) {
+        console.error(text);
+        const span = document.getElementById("status");
+        span.textContent = text;
+        span.classList.add('error');
+    }
+
+    let remoteStream = new MediaStream();
+
+    function onRemoteTrack(event) {
+        console.log('onRemoteTrack', event);
+        const track = event.track;
+        remoteStream.addTrack(track);
+        getVideoElement().srcObject = remoteStream;
+        play.disabled = false;
+        fullscreenButton.disabled = false;
+    }
+
+    function createPcFromRemoteOffer(offerSdpJson, sendAnswerCallback) {
+        resetVideo();
+        let parsedSdp = JSON.parse(offerSdpJson);
+        if ("offer" !== parsedSdp.type)
+            return;
+
+        if (peer_connection) {
+            peer_connection.close();
+            peer_connection = null;
+            remoteStream = new MediaStream();
+        }
+        // Reset connection attempts because we connected successfully
+        connect_attempts = 0;
+
+        console.log('Creating RTCPeerConnection');
+
+        peer_connection = new RTCPeerConnection({iceServers: iceServers});
+        peer_connection.ondatachannel = onDataChannel;
+        peer_connection.ontrack = onRemoteTrack;
+        peer_connection.addTransceiver('video', {direction: "recvonly"});
+
+        peer_connection.setRemoteDescription(parsedSdp).then(() => {
+            setStatus("Remote SDP set, creating answer");
+            return peer_connection.createAnswer().then(localsdp => {
+                peer_connection.setLocalDescription(localsdp).then(() => {
+                    setStatus("Sending SDP " + localsdp.type);
+                    console.log(localsdp);
+                });
+            });
+        }).catch(setError);
+
+        peer_connection.onicegatheringstatechange = () => {
+            console.log('onicegatheringstatechange', peer_connection.iceGatheringState);
+            if (peer_connection.iceGatheringState === "complete") {
+                const answerExtended = {
+                    "type": peer_connection.localDescription.type,
+                    "sdp": peer_connection.localDescription.sdp,
+                    "screen": {
+                        "width": screen.width,
+                        "height": screen.height,
+                        "orientation": {
+                            "angle": screen.orientation.angle,
+                            "type": screen.orientation.type
+                        }
+                    }
+                }
+                sendAnswerCallback(JSON.stringify(answerExtended));
+            }
+        }
+        peer_connection.onicecandidate = e => {
+            console.log("onicecandidate", e)
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog && e.candidate && e.candidate.address) {
+                candidatesLog.innerText += e.candidate.address + ":" + e.candidate.port + "\n";
+            }
+        }
+        peer_connection.oniceconnectionstatechange = e => {
+            console.log("oniceconnectionstatechange", e)
+            ///peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += "iceConnectionState: " + peer_connection.iceConnectionState + "\n";
+            }
+        }
+
+        peer_connection.onconnectionstatechange = e => {
+            console.log("onconnectionstatechange", e)
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += "connectionState: " + peer_connection.connectionState + "\n";
+                if (peer_connection.connectionState === "connected") {
+                    let transceivers = peer_connection.getTransceivers();
+                    for (let i = 0; i < transceivers.length; i++) {
+                        if (transceivers[i].receiver.transport != null) {
+                            let pair = transceivers[i].receiver.transport.iceTransport.getSelectedCandidatePair()
+                            if (pair.local && pair.remote) {
+                                let x = "" + pair.local.address + "";
+                                console.log(x);
+                                candidatesLog.innerText += "local candidate: " + x + ":" + pair.local.port + "\n";
+                                candidatesLog.innerText += "remote candidate: " + pair.remote.address + ":" + pair.remote.port + "\n";
+                            } else {
+                                candidatesLog.innerText += "candidate pair: " + JSON.stringify(pair) + "\n";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        setStatus("Created peer connection for call, waiting for SDP");
+    }
+
+    receiverWs.connect((ok, remoteId) => {
+        console.log(`receiver ${remoteId} connected ${ok}`)
+        receiverWs.receiveOffer(offer => {
+            console.log(`received offer ${offer}`)
+            createPcFromRemoteOffer(offer, answer => {
+                receiverWs.sendAnswer(answer);
+            });
+        }, peerid => {
+            console.log("disconnected", peerid)
+        });
+    });
+    const MotionEvent = {
+        ACTION_DOWN: 0x00,
+        ACTION_UP: 0x01,
+        ACTION_MOVE: 0x02,
+        BUTTON_PRIMARY: 1 << 0
+    };
+    const ControlMessage = {
+        TYPE_INJECT_KEYCODE: 0x00,
+        TYPE_INJECT_TOUCH_EVENT: 0x02,
+    };
+
+    class DataOutputStream {
+        constructor(dataSize) {
+            this.buffer = new ArrayBuffer(dataSize);
+            this.view = new DataView(this.buffer);
+            this.offset = 0;
+        }
+
+        writeByte(b) {
+            this.view.setUint8(this.offset++, b);
+        }
+
+        writeLong(v) {
+            this.view.setBigInt64(this.offset, BigInt(v), false); // false = big-endian like Java
+            this.offset += 8
+        }
+
+        writeInt(x) {
+            this.view.setInt32(this.offset, x | 0, false);
+            this.offset += 4
+        }
+
+        writeShort(s) {
+            this.view.setInt16(this.offset, s | 0, false);
+            this.offset += 2
+        }
+
+        toUint8Array() {
+            return new Uint8Array(this.buffer);
+        }
+    }
+
+    function createTouchEventPacket(x, y, w, h, pressure, actionButton, buttons, action, pointerId) {
+        const dos = new DataOutputStream(32)
+        dos.writeByte(ControlMessage.TYPE_INJECT_TOUCH_EVENT);
+        dos.writeByte(action);
+        dos.writeLong(pointerId);
+        dos.writeInt(x);
+        dos.writeInt(y);
+        dos.writeShort(w);
+        dos.writeShort(h);
+        dos.writeShort((pressure * 65536) | 0);
+        dos.writeInt(actionButton);
+        dos.writeInt(buttons);
+        return dos.toUint8Array();
+    }
+
+    const KeyEvent = {
+        KEYCODE_UNKNOWN: 0,
+        KEYCODE_SOFT_LEFT: 1,
+        KEYCODE_SOFT_RIGHT: 2,
+        KEYCODE_HOME: 3,
+        KEYCODE_BACK: 4,
+        KEYCODE_CALL: 5,
+        KEYCODE_ENDCALL: 6,
+        KEYCODE_0: 7,
+        KEYCODE_1: 8,
+        KEYCODE_2: 9,
+        KEYCODE_3: 10,
+        KEYCODE_4: 11,
+        KEYCODE_5: 12,
+        KEYCODE_6: 13,
+        KEYCODE_7: 14,
+        KEYCODE_8: 15,
+        KEYCODE_9: 16,
+        KEYCODE_STAR: 17,
+        KEYCODE_POUND: 18,
+        KEYCODE_DPAD_UP: 19,
+        KEYCODE_DPAD_DOWN: 20,
+        KEYCODE_DPAD_LEFT: 21,
+        KEYCODE_DPAD_RIGHT: 22,
+        KEYCODE_DPAD_CENTER: 23,
+        KEYCODE_VOLUME_UP: 24,
+        KEYCODE_VOLUME_DOWN: 25,
+        KEYCODE_POWER: 26,
+        KEYCODE_CAMERA: 27,
+        KEYCODE_CLEAR: 28,
+        KEYCODE_A: 29,
+        KEYCODE_B: 30,
+        KEYCODE_C: 31,
+        KEYCODE_D: 32,
+        KEYCODE_E: 33,
+        KEYCODE_F: 34,
+        KEYCODE_G: 35,
+        KEYCODE_H: 36,
+        KEYCODE_I: 37,
+        KEYCODE_J: 38,
+        KEYCODE_K: 39,
+        KEYCODE_L: 40,
+        KEYCODE_M: 41,
+        KEYCODE_N: 42,
+        KEYCODE_O: 43,
+        KEYCODE_P: 44,
+        KEYCODE_Q: 45,
+        KEYCODE_R: 46,
+        KEYCODE_S: 47,
+        KEYCODE_T: 48,
+        KEYCODE_U: 49,
+        KEYCODE_V: 50,
+        KEYCODE_W: 51,
+        KEYCODE_X: 52,
+        KEYCODE_Y: 53,
+        KEYCODE_Z: 54,
+        KEYCODE_COMMA: 55,
+        KEYCODE_PERIOD: 56,
+        KEYCODE_ALT_LEFT: 57,
+        KEYCODE_ALT_RIGHT: 58,
+        KEYCODE_SHIFT_LEFT: 59,
+        KEYCODE_SHIFT_RIGHT: 60,
+        KEYCODE_TAB: 61,
+        KEYCODE_SPACE: 62,
+        KEYCODE_SYM: 63,
+        KEYCODE_EXPLORER: 64,
+        KEYCODE_ENVELOPE: 65,
+        KEYCODE_ENTER: 66,
+        KEYCODE_DEL: 67,
+        KEYCODE_GRAVE: 68,
+        KEYCODE_MINUS: 69,
+        KEYCODE_EQUALS: 70,
+        KEYCODE_LEFT_BRACKET: 71,
+        KEYCODE_RIGHT_BRACKET: 72,
+        KEYCODE_BACKSLASH: 73,
+        KEYCODE_SEMICOLON: 74,
+        KEYCODE_APOSTROPHE: 75,
+        KEYCODE_SLASH: 76,
+        KEYCODE_AT: 77,
+        KEYCODE_NUM: 78,
+        KEYCODE_HEADSETHOOK: 79,
+        KEYCODE_FOCUS: 80,
+        KEYCODE_PLUS: 81,
+        KEYCODE_MENU: 82,
+        KEYCODE_NOTIFICATION: 83,
+        KEYCODE_SEARCH: 84,
+        KEYCODE_MEDIA_PLAY_PAUSE: 85,
+        KEYCODE_MEDIA_STOP: 86,
+        KEYCODE_MEDIA_NEXT: 87,
+        KEYCODE_MEDIA_PREVIOUS: 88,
+        KEYCODE_MEDIA_REWIND: 89,
+        KEYCODE_MEDIA_FAST_FORWARD: 90,
+        KEYCODE_MUTE: 91,
+        KEYCODE_PAGE_UP: 92,
+        KEYCODE_PAGE_DOWN: 93,
+        KEYCODE_PICTSYMBOLS: 94,
+        KEYCODE_SWITCH_CHARSET: 95,
+        KEYCODE_BUTTON_A: 96,
+        KEYCODE_BUTTON_B: 97,
+        KEYCODE_BUTTON_C: 98,
+        KEYCODE_BUTTON_X: 99,
+        KEYCODE_BUTTON_Y: 100,
+        KEYCODE_BUTTON_Z: 101,
+        KEYCODE_BUTTON_L1: 102,
+        KEYCODE_BUTTON_R1: 103,
+        KEYCODE_BUTTON_L2: 104,
+        KEYCODE_BUTTON_R2: 105,
+        KEYCODE_BUTTON_THUMBL: 106,
+        KEYCODE_BUTTON_THUMBR: 107,
+        KEYCODE_BUTTON_START: 108,
+        KEYCODE_BUTTON_SELECT: 109,
+        KEYCODE_BUTTON_MODE: 110,
+        KEYCODE_ESCAPE: 111,
+        KEYCODE_FORWARD_DEL: 112,
+        KEYCODE_CTRL_LEFT: 113,
+        KEYCODE_CTRL_RIGHT: 114,
+        KEYCODE_CAPS_LOCK: 115,
+        KEYCODE_SCROLL_LOCK: 116,
+        KEYCODE_META_LEFT: 117,
+        KEYCODE_META_RIGHT: 118,
+        KEYCODE_FUNCTION: 119,
+        KEYCODE_SYSRQ: 120,
+        KEYCODE_BREAK: 121,
+        KEYCODE_MOVE_HOME: 122,
+        KEYCODE_MOVE_END: 123,
+        KEYCODE_INSERT: 124,
+        KEYCODE_FORWARD: 125,
+        KEYCODE_MEDIA_PLAY: 126,
+        KEYCODE_MEDIA_PAUSE: 127,
+        KEYCODE_MEDIA_CLOSE: 128,
+        KEYCODE_MEDIA_EJECT: 129,
+        KEYCODE_MEDIA_RECORD: 130,
+        KEYCODE_F1: 131,
+        KEYCODE_F2: 132,
+        KEYCODE_F3: 133,
+        KEYCODE_F4: 134,
+        KEYCODE_F5: 135,
+        KEYCODE_F6: 136,
+        KEYCODE_F7: 137,
+        KEYCODE_F8: 138,
+        KEYCODE_F9: 139,
+        KEYCODE_F10: 140,
+        KEYCODE_F11: 141,
+        KEYCODE_F12: 142,
+        KEYCODE_NUM_LOCK: 143,
+        KEYCODE_NUMPAD_0: 144,
+        KEYCODE_NUMPAD_1: 145,
+        KEYCODE_NUMPAD_2: 146,
+        KEYCODE_NUMPAD_3: 147,
+        KEYCODE_NUMPAD_4: 148,
+        KEYCODE_NUMPAD_5: 149,
+        KEYCODE_NUMPAD_6: 150,
+        KEYCODE_NUMPAD_7: 151,
+        KEYCODE_NUMPAD_8: 152,
+        KEYCODE_NUMPAD_9: 153,
+        KEYCODE_NUMPAD_DIVIDE: 154,
+        KEYCODE_NUMPAD_MULTIPLY: 155,
+        KEYCODE_NUMPAD_SUBTRACT: 156,
+        KEYCODE_NUMPAD_ADD: 157,
+        KEYCODE_NUMPAD_DOT: 158,
+        KEYCODE_NUMPAD_COMMA: 159,
+        KEYCODE_NUMPAD_ENTER: 160,
+        KEYCODE_NUMPAD_EQUALS: 161,
+        KEYCODE_NUMPAD_LEFT_PAREN: 162,
+        KEYCODE_NUMPAD_RIGHT_PAREN: 163,
+        KEYCODE_VOLUME_MUTE: 164,
+        KEYCODE_INFO: 165,
+        KEYCODE_CHANNEL_UP: 166,
+        KEYCODE_CHANNEL_DOWN: 167,
+        KEYCODE_ZOOM_IN: 168,
+        KEYCODE_ZOOM_OUT: 169,
+        KEYCODE_TV: 170,
+        KEYCODE_WINDOW: 171,
+        KEYCODE_GUIDE: 172,
+        KEYCODE_DVR: 173,
+        KEYCODE_BOOKMARK: 174,
+        KEYCODE_CAPTIONS: 175,
+        KEYCODE_SETTINGS: 176,
+        KEYCODE_TV_POWER: 177,
+        KEYCODE_TV_INPUT: 178,
+        KEYCODE_STB_POWER: 179,
+        KEYCODE_STB_INPUT: 180,
+        KEYCODE_AVR_POWER: 181,
+        KEYCODE_AVR_INPUT: 182,
+        KEYCODE_PROG_RED: 183,
+        KEYCODE_PROG_GREEN: 184,
+        KEYCODE_PROG_YELLOW: 185,
+        KEYCODE_PROG_BLUE: 186,
+        KEYCODE_APP_SWITCH: 187,
+        KEYCODE_BUTTON_1: 188,
+        KEYCODE_BUTTON_2: 189,
+        KEYCODE_BUTTON_3: 190,
+        KEYCODE_BUTTON_4: 191,
+        KEYCODE_BUTTON_5: 192,
+        KEYCODE_BUTTON_6: 193,
+        KEYCODE_BUTTON_7: 194,
+        KEYCODE_BUTTON_8: 195,
+        KEYCODE_BUTTON_9: 196,
+        KEYCODE_BUTTON_10: 197,
+        KEYCODE_BUTTON_11: 198,
+        KEYCODE_BUTTON_12: 199,
+        KEYCODE_BUTTON_13: 200,
+        KEYCODE_BUTTON_14: 201,
+        KEYCODE_BUTTON_15: 202,
+        KEYCODE_BUTTON_16: 203,
+        KEYCODE_LANGUAGE_SWITCH: 204,
+        KEYCODE_MANNER_MODE: 205,
+        KEYCODE_3D_MODE: 206,
+        KEYCODE_CONTACTS: 207,
+        KEYCODE_CALENDAR: 208,
+        KEYCODE_MUSIC: 209,
+        KEYCODE_CALCULATOR: 210,
+        KEYCODE_ZENKAKU_HANKAKU: 211,
+        KEYCODE_EISU: 212,
+        KEYCODE_MUHENKAN: 213,
+        KEYCODE_HENKAN: 214,
+        KEYCODE_KATAKANA_HIRAGANA: 215,
+        KEYCODE_YEN: 216,
+        KEYCODE_RO: 217,
+        KEYCODE_KANA: 218,
+        KEYCODE_ASSIST: 219,
+        KEYCODE_BRIGHTNESS_DOWN: 220,
+        KEYCODE_BRIGHTNESS_UP: 221,
+        KEYCODE_MEDIA_AUDIO_TRACK: 222,
+        KEYCODE_SLEEP: 223,
+        KEYCODE_WAKEUP: 224,
+        KEYCODE_PAIRING: 225,
+        KEYCODE_MEDIA_TOP_MENU: 226,
+        KEYCODE_11: 227,
+        KEYCODE_12: 228,
+        KEYCODE_LAST_CHANNEL: 229,
+        KEYCODE_TV_DATA_SERVICE: 230,
+        KEYCODE_VOICE_ASSIST: 231,
+        KEYCODE_TV_RADIO_SERVICE: 232,
+        KEYCODE_TV_TELETEXT: 233,
+        KEYCODE_TV_NUMBER_ENTRY: 234,
+        KEYCODE_TV_TERRESTRIAL_ANALOG: 235,
+        KEYCODE_TV_TERRESTRIAL_DIGITAL: 236,
+        KEYCODE_TV_SATELLITE: 237,
+        KEYCODE_TV_SATELLITE_BS: 238,
+        KEYCODE_TV_SATELLITE_CS: 239,
+        KEYCODE_TV_SATELLITE_SERVICE: 240,
+        KEYCODE_TV_NETWORK: 241,
+        KEYCODE_TV_ANTENNA_CABLE: 242,
+        KEYCODE_TV_INPUT_HDMI_1: 243,
+        KEYCODE_TV_INPUT_HDMI_2: 244,
+        KEYCODE_TV_INPUT_HDMI_3: 245,
+        KEYCODE_TV_INPUT_HDMI_4: 246,
+        KEYCODE_TV_INPUT_COMPOSITE_1: 247,
+        KEYCODE_TV_INPUT_COMPOSITE_2: 248,
+        KEYCODE_TV_INPUT_COMPONENT_1: 249,
+        KEYCODE_TV_INPUT_COMPONENT_2: 250,
+        KEYCODE_TV_INPUT_VGA_1: 251,
+        KEYCODE_TV_AUDIO_DESCRIPTION: 252,
+        KEYCODE_TV_AUDIO_DESCRIPTION_MIX_UP: 253,
+        KEYCODE_TV_AUDIO_DESCRIPTION_MIX_DOWN: 254,
+        KEYCODE_TV_ZOOM_MODE: 255,
+        KEYCODE_TV_CONTENTS_MENU: 256,
+        KEYCODE_TV_MEDIA_CONTEXT_MENU: 257,
+        KEYCODE_TV_TIMER_PROGRAMMING: 258,
+        KEYCODE_HELP: 259,
+        KEYCODE_NAVIGATE_PREVIOUS: 260,
+        KEYCODE_NAVIGATE_NEXT: 261,
+        KEYCODE_NAVIGATE_IN: 262,
+        KEYCODE_NAVIGATE_OUT: 263,
+        KEYCODE_STEM_PRIMARY: 264,
+        KEYCODE_STEM_1: 265,
+        KEYCODE_STEM_2: 266,
+        KEYCODE_STEM_3: 267,
+        KEYCODE_DPAD_UP_LEFT: 268,
+        KEYCODE_DPAD_DOWN_LEFT: 269,
+        KEYCODE_DPAD_UP_RIGHT: 270,
+        KEYCODE_DPAD_DOWN_RIGHT: 271,
+        KEYCODE_MEDIA_SKIP_FORWARD: 272,
+        KEYCODE_MEDIA_SKIP_BACKWARD: 273,
+        KEYCODE_MEDIA_STEP_FORWARD: 274,
+        KEYCODE_MEDIA_STEP_BACKWARD: 275,
+        KEYCODE_SOFT_SLEEP: 276,
+        KEYCODE_CUT: 277,
+        KEYCODE_COPY: 278,
+        KEYCODE_PASTE: 279,
+        KEYCODE_SYSTEM_NAVIGATION_UP: 280,
+        KEYCODE_SYSTEM_NAVIGATION_DOWN: 281,
+        KEYCODE_SYSTEM_NAVIGATION_LEFT: 282,
+        KEYCODE_SYSTEM_NAVIGATION_RIGHT: 283,
+        KEYCODE_ALL_APPS: 284,
+        KEYCODE_REFRESH: 285,
+        KEYCODE_THUMBS_UP: 286,
+        KEYCODE_THUMBS_DOWN: 287,
+        KEYCODE_PROFILE_SWITCH: 288,
+        KEYCODE_VIDEO_APP_1: 289,
+        KEYCODE_VIDEO_APP_2: 290,
+        KEYCODE_VIDEO_APP_3: 291,
+        KEYCODE_VIDEO_APP_4: 292,
+        KEYCODE_VIDEO_APP_5: 293,
+        KEYCODE_VIDEO_APP_6: 294,
+        KEYCODE_VIDEO_APP_7: 295,
+        KEYCODE_VIDEO_APP_8: 296,
+        KEYCODE_FEATURED_APP_1: 297,
+        KEYCODE_FEATURED_APP_2: 298,
+        KEYCODE_FEATURED_APP_3: 299,
+        KEYCODE_FEATURED_APP_4: 300,
+        KEYCODE_DEMO_APP_1: 301,
+        KEYCODE_DEMO_APP_2: 302,
+        KEYCODE_DEMO_APP_3: 303,
+        KEYCODE_DEMO_APP_4: 304,
+        KEYCODE_KEYBOARD_BACKLIGHT_DOWN: 305,
+        KEYCODE_KEYBOARD_BACKLIGHT_UP: 306,
+        KEYCODE_KEYBOARD_BACKLIGHT_TOGGLE: 307,
+        KEYCODE_STYLUS_BUTTON_PRIMARY: 308,
+        KEYCODE_STYLUS_BUTTON_SECONDARY: 309,
+        KEYCODE_STYLUS_BUTTON_TERTIARY: 310,
+        KEYCODE_STYLUS_BUTTON_TAIL: 311,
+        KEYCODE_RECENT_APPS: 312,
+        KEYCODE_MACRO_1: 313,
+        KEYCODE_MACRO_2: 314,
+        KEYCODE_MACRO_3: 315,
+        KEYCODE_MACRO_4: 316,
+        KEYCODE_EMOJI_PICKER: 317,
+        KEYCODE_SCREENSHOT: 318,
+        MAX_KEYCODE: 84,
+        ACTION_DOWN: 0,
+        ACTION_UP: 1,
+        ACTION_MULTIPLE: 2,
+        META_CAP_LOCKED: 0x100,
+        META_ALT_LOCKED: 0x200,
+        META_SYM_LOCKED: 0x400,
+        META_SELECTING: 0x800,
+        META_ALT_ON: 0x02,
+        META_ALT_LEFT_ON: 0x10,
+        META_ALT_RIGHT_ON: 0x20,
+        META_SHIFT_ON: 0x1,
+        META_SHIFT_LEFT_ON: 0x40,
+        META_SHIFT_RIGHT_ON: 0x80,
+        META_SYM_ON: 0x4,
+        META_FUNCTION_ON: 0x8,
+        META_CTRL_ON: 0x1000,
+        META_CTRL_LEFT_ON: 0x2000,
+        META_CTRL_RIGHT_ON: 0x4000,
+        META_META_ON: 0x10000,
+        META_META_LEFT_ON: 0x20000,
+        META_META_RIGHT_ON: 0x40000,
+        META_CAPS_LOCK_ON: 0x100000,
+        META_NUM_LOCK_ON: 0x200000,
+        META_SCROLL_LOCK_ON: 0x400000,
+        FLAG_WOKE_HERE: 0x1,
+        FLAG_SOFT_KEYBOARD: 0x2,
+        FLAG_KEEP_TOUCH_MODE: 0x4,
+        FLAG_FROM_SYSTEM: 0x8,
+        FLAG_EDITOR_ACTION: 0x10,
+        FLAG_VIRTUAL_HARD_KEY: 0x40,
+        FLAG_LONG_PRESS: 0x80,
+        FLAG_CANCELED_LONG_PRESS: 0x100,
+        FLAG_TRACKING: 0x200,
+        FLAG_FALLBACK: 0x400,
+        FLAG_PREDISPATCH: 0x20000000,
+        FLAG_START_TRACKING: 0x40000000,
+    };
+
+    class Pointers {
+        constructor() {
+            this.pointerStates = new Map()
+            this.pointerMap = new Map()
+            this.availableIds = [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+        }
+
+        updatePointer(pointerId) {
+            const nowMsec = performance.now();
+            this.pointerStates.set(pointerId, nowMsec);
+            for (let k of this.pointerStates.keys()) {
+                let lastUpdated = this.pointerStates.get(k);
+                let threshold = nowMsec - 200;
+                if (lastUpdated < threshold) {
+                    console.log(`Deleting pointer ${k} ${lastUpdated} < ${threshold}`);
+                    this.deletePointer(k)
+                }
+            }
+            if (!this.pointerMap.has(pointerId)) {
+                let assignedId = pointerId;
+                for (let i = 2; i < 12; i++) {
+                    if (this.availableIds[i] === 1) {
+                        this.availableIds[i] = 0;
+                        assignedId = i;
+                        break;
+                    }
+                }
+                console.log(pointerId, '->', assignedId);
+                this.pointerMap.set(pointerId, assignedId);
+            }
+            return this.pointerMap.get(pointerId);
+        }
+
+        deletePointer(pointerId) {
+            let assignedId = this.pointerMap.get(pointerId);
+            if (assignedId < this.availableIds.length) {
+                this.availableIds[assignedId] = 1;
+            }
+            this.pointerStates.delete(pointerId);
+            this.pointerMap.delete(pointerId);
+            return assignedId;
+        }
+    }
+
+    const pointers = new Pointers()
+
+    function createTouchEventPacketFromEvent(action, pointerId, e) {
+        let x = e.offsetX;
+        let y = e.offsetY;
+        let w = e.target.clientWidth;
+        let h = e.target.clientHeight;
+        if (w !== e.target.videoWidth || h !== e.target.videoHeight) {
+            x = x * (e.target.videoWidth / e.target.clientWidth)
+            y = y * (e.target.videoHeight / e.target.clientHeight)
+            w = e.target.videoWidth
+            h = e.target.videoHeight
+        }
+        const pressure = e.pressure;
+        const actionButton = e.button;
+        const buttons = e.buttons;
+        return createTouchEventPacket(x, y, w, h, pressure, actionButton, buttons, action, pointerId);
+    }
+
+    getVideoElement().addEventListener("pointerrawupdate", e => {
+        e.preventDefault();
+        console.log(e.buttons, e.offsetX, e.offsetY, e.pressure, e.pointerType, e);
+        if (!dataChannel || e.buttons === 0)
+            return;
+        let pointerId = e.pointerId;
+        if (e.pointerType === "touch") {
+            pointerId = pointers.updatePointer(e.pointerId);
+        }
+        dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_MOVE, pointerId, e));
+    });
+    getVideoElement().addEventListener("pointerdown", e => {
+        e.preventDefault();
+        console.log("Pressed", e.button, e.pointerType, e)
+        if (!dataChannel)
+            return;
+        let pointerId = e.pointerId;
+        if (e.pointerType === "touch") {
+            pointerId = pointers.updatePointer(e.pointerId);
+        }
+        dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_DOWN, pointerId, e));
+    });
+    getVideoElement().addEventListener("pointerup", e => {
+        e.preventDefault();
+        console.log("Released", e.button, e.pointerType, e)
+        if (!dataChannel)
+            return;
+        let pointerId = e.pointerId;
+        if (e.pointerType === "touch") {
+            pointerId = pointers.deletePointer(e.pointerId);
+        }
+        dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_UP, pointerId, e));
+    });
+    const CodeToAndroidKeyCode = {
+        // Letters
+        "KeyA": KeyEvent.KEYCODE_A,
+        "KeyB": KeyEvent.KEYCODE_B,
+        "KeyC": KeyEvent.KEYCODE_C,
+        "KeyD": KeyEvent.KEYCODE_D,
+        "KeyE": KeyEvent.KEYCODE_E,
+        "KeyF": KeyEvent.KEYCODE_F,
+        "KeyG": KeyEvent.KEYCODE_G,
+        "KeyH": KeyEvent.KEYCODE_H,
+        "KeyI": KeyEvent.KEYCODE_I,
+        "KeyJ": KeyEvent.KEYCODE_J,
+        "KeyK": KeyEvent.KEYCODE_K,
+        "KeyL": KeyEvent.KEYCODE_L,
+        "KeyM": KeyEvent.KEYCODE_M,
+        "KeyN": KeyEvent.KEYCODE_N,
+        "KeyO": KeyEvent.KEYCODE_O,
+        "KeyP": KeyEvent.KEYCODE_P,
+        "KeyQ": KeyEvent.KEYCODE_Q,
+        "KeyR": KeyEvent.KEYCODE_R,
+        "KeyS": KeyEvent.KEYCODE_S,
+        "KeyT": KeyEvent.KEYCODE_T,
+        "KeyU": KeyEvent.KEYCODE_U,
+        "KeyV": KeyEvent.KEYCODE_V,
+        "KeyW": KeyEvent.KEYCODE_W,
+        "KeyX": KeyEvent.KEYCODE_X,
+        "KeyY": KeyEvent.KEYCODE_Y,
+        "KeyZ": KeyEvent.KEYCODE_Z,
+
+        // Digits
+        "Digit0": KeyEvent.KEYCODE_0,
+        "Digit1": KeyEvent.KEYCODE_1,
+        "Digit2": KeyEvent.KEYCODE_2,
+        "Digit3": KeyEvent.KEYCODE_3,
+        "Digit4": KeyEvent.KEYCODE_4,
+        "Digit5": KeyEvent.KEYCODE_5,
+        "Digit6": KeyEvent.KEYCODE_6,
+        "Digit7": KeyEvent.KEYCODE_7,
+        "Digit8": KeyEvent.KEYCODE_8,
+        "Digit9": KeyEvent.KEYCODE_9,
+
+        // Function keys
+        "F1": KeyEvent.KEYCODE_F1,
+        "F2": KeyEvent.KEYCODE_F2,
+        "F3": KeyEvent.KEYCODE_F3,
+        "F4": KeyEvent.KEYCODE_F4,
+        "F5": KeyEvent.KEYCODE_F5,
+        "F6": KeyEvent.KEYCODE_F6,
+        "F7": KeyEvent.KEYCODE_F7,
+        "F8": KeyEvent.KEYCODE_F8,
+        "F9": KeyEvent.KEYCODE_F9,
+        "F10": KeyEvent.KEYCODE_F10,
+        "F11": KeyEvent.KEYCODE_F11,
+        "F12": KeyEvent.KEYCODE_F12,
+
+        // Control keys
+        "Enter": KeyEvent.KEYCODE_ENTER,
+        "Escape": KeyEvent.KEYCODE_ESCAPE,
+        "Backspace": KeyEvent.KEYCODE_DEL,
+        "Tab": KeyEvent.KEYCODE_TAB,
+        "CapsLock": KeyEvent.KEYCODE_CAPS_LOCK,
+        "ShiftLeft": KeyEvent.KEYCODE_SHIFT_LEFT,
+        "ShiftRight": KeyEvent.KEYCODE_SHIFT_RIGHT,
+        "ControlLeft": KeyEvent.KEYCODE_CTRL_LEFT,
+        "ControlRight": KeyEvent.KEYCODE_CTRL_RIGHT,
+        "AltLeft": KeyEvent.KEYCODE_ALT_LEFT,
+        "AltRight": KeyEvent.KEYCODE_ALT_RIGHT,
+        "MetaLeft": KeyEvent.KEYCODE_META_LEFT,
+        "MetaRight": KeyEvent.KEYCODE_META_RIGHT,
+        "ContextMenu": KeyEvent.KEYCODE_MENU,
+
+        // Navigation
+        "ArrowUp": KeyEvent.KEYCODE_DPAD_UP,
+        "ArrowDown": KeyEvent.KEYCODE_DPAD_DOWN,
+        "ArrowLeft": KeyEvent.KEYCODE_DPAD_LEFT,
+        "ArrowRight": KeyEvent.KEYCODE_DPAD_RIGHT,
+        "Home": KeyEvent.KEYCODE_MOVE_HOME,
+        "End": KeyEvent.KEYCODE_MOVE_END,
+        "PageUp": KeyEvent.KEYCODE_PAGE_UP,
+        "PageDown": KeyEvent.KEYCODE_PAGE_DOWN,
+        "Insert": KeyEvent.KEYCODE_INSERT,
+        "Delete": KeyEvent.KEYCODE_FORWARD_DEL,
+
+        // Editing / punctuation
+        "Space": KeyEvent.KEYCODE_SPACE,
+        "Minus": KeyEvent.KEYCODE_MINUS,
+        "Equal": KeyEvent.KEYCODE_EQUALS,
+        "BracketLeft": KeyEvent.KEYCODE_LEFT_BRACKET,
+        "BracketRight": KeyEvent.KEYCODE_RIGHT_BRACKET,
+        "Backslash": KeyEvent.KEYCODE_BACKSLASH,
+        "Semicolon": KeyEvent.KEYCODE_SEMICOLON,
+        "Quote": KeyEvent.KEYCODE_APOSTROPHE,
+        "Comma": KeyEvent.KEYCODE_COMMA,
+        "Period": KeyEvent.KEYCODE_PERIOD,
+        "Slash": KeyEvent.KEYCODE_SLASH,
+        "Backquote": KeyEvent.KEYCODE_GRAVE,
+
+        // Numpad
+        "NumLock": KeyEvent.KEYCODE_NUM_LOCK,
+        "Numpad0": KeyEvent.KEYCODE_NUMPAD_0,
+        "Numpad1": KeyEvent.KEYCODE_NUMPAD_1,
+        "Numpad2": KeyEvent.KEYCODE_NUMPAD_2,
+        "Numpad3": KeyEvent.KEYCODE_NUMPAD_3,
+        "Numpad4": KeyEvent.KEYCODE_NUMPAD_4,
+        "Numpad5": KeyEvent.KEYCODE_NUMPAD_5,
+        "Numpad6": KeyEvent.KEYCODE_NUMPAD_6,
+        "Numpad7": KeyEvent.KEYCODE_NUMPAD_7,
+        "Numpad8": KeyEvent.KEYCODE_NUMPAD_8,
+        "Numpad9": KeyEvent.KEYCODE_NUMPAD_9,
+        "NumpadAdd": KeyEvent.KEYCODE_NUMPAD_ADD,
+        "NumpadSubtract": KeyEvent.KEYCODE_NUMPAD_SUBTRACT,
+        "NumpadMultiply": KeyEvent.KEYCODE_NUMPAD_MULTIPLY,
+        "NumpadDivide": KeyEvent.KEYCODE_NUMPAD_DIVIDE,
+        "NumpadDecimal": KeyEvent.KEYCODE_NUMPAD_DOT,
+        "NumpadEnter": KeyEvent.KEYCODE_NUMPAD_ENTER,
+
+        // System / media
+        "PrintScreen": KeyEvent.KEYCODE_SYSRQ,
+        "ScrollLock": KeyEvent.KEYCODE_SCROLL_LOCK,
+        "Pause": KeyEvent.KEYCODE_BREAK,
+        "VolumeUp": KeyEvent.KEYCODE_VOLUME_UP,
+        "VolumeDown": KeyEvent.KEYCODE_VOLUME_DOWN,
+        "VolumeMute": KeyEvent.KEYCODE_VOLUME_MUTE,
+        "MediaPlayPause": KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+        "MediaNextTrack": KeyEvent.KEYCODE_MEDIA_NEXT,
+        "MediaPreviousTrack": KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+        "MediaStop": KeyEvent.KEYCODE_MEDIA_STOP,
+        "BrowserHome": KeyEvent.KEYCODE_HOME,
+    };
+
+    function createKeyCodePacket(action, keycode, repeat, metastate) {
+        const dos = new DataOutputStream(1 + 1 + 4 + 4 + 4);
+        dos.writeByte(ControlMessage.TYPE_INJECT_KEYCODE);
+        dos.writeByte(action); // KeyEvent.ACTION_UP);
+        dos.writeInt(keycode); //KeyEvent.KEYCODE_ENTER);
+        dos.writeInt(repeat); // repeat
+        dos.writeInt(metastate); // KeyEvent.META_CTRL_ON
+        return dos.toUint8Array();
+    }
+
+    function keyboardEventToPacket(e) {
+        const action = e.type === "keydown" ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP;
+        const keycode = CodeToAndroidKeyCode[e.code] || KeyEvent.KEYCODE_UNKNOWN;
+        const repeat = e.repeat;
+        let metastate = 0;
+        if (e.ctrlKey)
+            metastate |= KeyEvent.META_CTRL_ON;
+        if (e.shiftKey)
+            metastate |= KeyEvent.META_SHIFT_ON;
+        if (e.altKey)
+            metastate |= KeyEvent.META_ALT_ON;
+        if (e.metaKey)
+            metastate |= KeyEvent.META_FUNCTION_ON;
+        return createKeyCodePacket(action, keycode, repeat, metastate);
+    }
+
+    window.addEventListener("keydown", e => {
+        console.log(e.code, CodeToAndroidKeyCode[e.code], e.repeat, e.shiftKey);
+        if (!dataChannel)
+            return;
+        const packet = keyboardEventToPacket(e)
+        dataChannel.send(packet);
+    });
+    window.addEventListener("keyup", e => {
+        console.log(e.code, CodeToAndroidKeyCode[e.code], e.repeat, e.shiftKey);
+        if (!dataChannel)
+            return;
+        const packet = keyboardEventToPacket(e)
+        dataChannel.send(packet);
+    });
+
+    function disableTouch(event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    // Add listeners when the video goes fullscreen
+    // You might want to wrap this in logic for when the video actually enters fullscreen.
+    getVideoElement().addEventListener('touchstart', disableTouch);
+    getVideoElement().addEventListener('touchmove', disableTouch);
+    getVideoElement().addEventListener('touchend', disableTouch);
+    getVideoElement().addEventListener('touchcancel', disableTouch);
+    /*
+        function useStun() {
+            return "false" !== getQueryVariable("usestun") || !document.getElementById("no_stun_checkbox").checked
+        }
+
+        document.getElementById("no_stun_checkbox").onchange = e => {
+            console.log(e);
+            if (e.target.checked) {
+                iceServers = [];
+            } else {
+                iceServers = [{urls: ["stun:stun.l.google.com:19302"]}];
+            }
+        }
+        if ("false" === getQueryVariable("usestun")) {
+            iceServers = [];
+            document.getElementById("no_stun_checkbox").checked = true;
+        }
+
+
+        function resetState() {
+            // This will call onServerClose()
+            ws_conn.close();
+        }
+
+        function handleIncomingError(error) {
+            setError("ERROR: " + error);
+            resetState();
+        }
+
+
+        function setStatus(text) {
+            console.log(text);
+            const span = document.getElementById("status");
+            // Don't set the status if it already contains an error
+            if (!span.classList.contains('error'))
+                span.textContent = text;
+        }
+
+        function setError(text) {
+            console.error(text);
+            const span = document.getElementById("status");
+            span.textContent = text;
+            span.classList.add('error');
+        }
+
+        function resetVideo() {
+            // Release the webcam and mic
+            if (local_stream_promise)
+                local_stream_promise.then(stream => {
+                    if (stream) {
+                        stream.getTracks().forEach(function (track) {
+                            track.stop();
+                        });
+                    }
+                });
+
+            // Reset the video element and stop showing the last received frame
+            const videoElement = getVideoElement();
+            videoElement.pause();
+            videoElement.src = "";
+            videoElement.load();
+        }
+
+        // SDP offer received from peer, set remote description and create an answer
+        function onIncomingSDP(sdp) {
+            peer_connection.setRemoteDescription(sdp).then(() => {
+                setStatus("Remote SDP set");
+                if ("offer" !== sdp.type)
+                    return;
+                setStatus("Got SDP offer");
+                local_stream_promise.then((stream) => {
+                    setStatus("Got local stream, creating answer");
+                    peer_connection.createAnswer()
+                        .then(onLocalDescription).catch(setError);
+                }).catch(setError);
+            }).catch(setError);
+        }
+
+        // Local description was set, send it to peer
+        function onLocalDescription(desc) {
+            console.log("Got local description: " + JSON.stringify(desc));
+            peer_connection.setLocalDescription(desc).then(function () {
+                setStatus("Sending SDP " + desc.type);
+            });
+        }
+
+        function generateOffer() {
+            peer_connection.createOffer().then(onLocalDescription).catch(setError);
+        }
+
+        // ICE candidate received from peer, add it to the peer connection
+        function onIncomingICE(ice) {
+            const candidate = new RTCIceCandidate(ice);
+            let candidatesLog = document.getElementById("candidates");
+            if (candidatesLog) {
+                candidatesLog.innerText += candidate.address + ":" + candidate.port + "\n";
+            }
+            peer_connection.addIceCandidate(candidate).catch(setError);
+
+        }
+
+        function onServerMessage(event) {
+            console.log("Received " + event.data);
+            switch (event.data) {
+                case "HELLO":
+                    setStatus("Registered with server, waiting for call");
+                    return;
+                default:
+                    if (event.data.startsWith("ERROR")) {
+                        handleIncomingError(event.data);
+                        return;
+                    }
+                    if (event.data.startsWith("OFFER_REQUEST")) {
+                        // The peer wants us to set up and then send an offer
+                        createCall(null).then(generateOffer);
+                    } else {
+                        // Handle incoming JSON SDP and ICE messages
+                        let msg;
+                        try {
+                            msg = JSON.parse(event.data);
+                        } catch (e) {
+                            if (e instanceof SyntaxError) {
+                                handleIncomingError("Error parsing incoming JSON: " + event.data);
+                            } else {
+                                handleIncomingError("Unknown error parsing response: " + event.data);
+                            }
+                            return;
+                        }
+
+                        // Incoming JSON signals the beginning of a call
+                        if (!peer_connection)
+                            createCall(msg);
+
+                        if (msg.type != null) {
+                            onIncomingSDP(msg);
+                        } else if (msg.candidate != null) {
+                            onIncomingICE(msg);
+                        } else {
+                            handleIncomingError("Unknown incoming JSON: " + msg);
+                        }
+                    }
+            }
+        }
+
+        function onServerClose(event) {
+            setStatus('Disconnected from server');
+
+            // Reset after a second
+            window.setTimeout(websocketServerConnect, 1000);
+        }
+
+        function onServerError(event) {
+            setError("Unable to connect to server, did you add an exception for the certificate?")
+            // Retry after 3 seconds
+            window.setTimeout(websocketServerConnect, 3000);
+        }
+
+        function websocketServerConnect() {
+            connect_attempts++;
+            if (connect_attempts > 3) {
+                setError("Too many connection attempts, aborting. Refresh page to try again");
+                return;
+            }
+            // Clear errors in the status span
+            const span = document.getElementById("status");
+            span.classList.remove('error');
+            span.textContent = '';
+            // Fetch the peer id to use
+            setStatus("Connecting to server " + ws_url);
+            ws_conn = new WebSocket(ws_url);
+            // When connected, immediately register with the server
+            ws_conn.addEventListener('open', (event) => {
+                document.getElementById("peer-id").textContent = peer_id;
+                ws_conn.send('HELLO ' + peer_id);
+                setStatus("Registering with server");
+            });
+            ws_conn.addEventListener('error', onServerError);
+            ws_conn.addEventListener('message', onServerMessage);
+            ws_conn.addEventListener('close', onServerClose);
+        }
+
+        function onRemoteTrack(event) {
+            console.log('onRemoteTrack', event);
+            if (getVideoElement().srcObject !== event.streams[0]) {
+                console.log('Incoming stream', event);
+                console.log('Incoming stream', event.streams);
+                console.log('Incoming track', event.track);
+                if (event.streams && event.streams.length !== 0) {
+                    getVideoElement().srcObject = event.streams[0];
+                } else {
+                    getVideoElement().srcObject = new MediaStream([event.track])
+                }
+                play.disabled = false;
+            }
+        }
+
+        let dataChannel = null;
+        let pingTimer = null;
+        let pingCounter = 0
+
+        const handleDataChannelOpen = (event) => {
+            console.log("dataChannel.OnOpen", event);
+            dataChannel = event.target;
+            pingTimer = setInterval(() => {
+                let msg = "ping" + pingCounter;
+                pingCounter++;
+                return dataChannel.send(msg);
+            }, 2000);
+        };
+
+        const handleDataChannelMessageReceived = (event) => {
+            console.log("dataChannel.OnMessage:", event, event.data.type);
+
+            setStatus("Received data channel message " + event.data);
+            send_channel.send("Hi! (from browser)");
+        };
+
+        const handleDataChannelError = (error) => console.log("dataChannel.OnError:", error);
+
+        const handleDataChannelClose = (event) => console.log("dataChannel.OnClose", event);
+
+        function onDataChannel(event) {
+            setStatus("Data channel created");
+            let receiveChannel = event.channel;
+            receiveChannel.onopen = handleDataChannelOpen;
+            receiveChannel.onmessage = handleDataChannelMessageReceived;
+            receiveChannel.onerror = handleDataChannelError;
+            receiveChannel.onclose = handleDataChannelClose;
+        }
+
+        function createCall(msg) {
+            resetVideo();
+
+            if (peer_connection) {
+                peer_connection.close();
+                peer_connection = null;
+            }
+            // Reset connection attempts because we connected successfully
+            connect_attempts = 0;
+
+            console.log('Creating RTCPeerConnection');
+
+            peer_connection = new RTCPeerConnection({
+                iceServers: iceServers
+            });
+            send_channel = peer_connection.createDataChannel('label', null);
+            send_channel.onopen = handleDataChannelOpen;
+            send_channel.onmessage = handleDataChannelMessageReceived;
+            send_channel.onerror = handleDataChannelError;
+            send_channel.onclose = handleDataChannelClose;
+            peer_connection.ondatachannel = onDataChannel;
+            peer_connection.ontrack = onRemoteTrack;
+            peer_connection.addTransceiver('video', {direction: "recvonly"});
+            local_stream_promise = Promise.resolve();
+
+            if (msg != null && !msg.sdp) {
+                console.log("WARNING: First message wasn't an SDP message!?");
+            }
+
+            peer_connection.onicegatheringstatechange = () => {
+                console.log('onicegatheringstatechange', peer_connection.iceGatheringState);
+                if (peer_connection.iceGatheringState === "complete") {
+                    ws_conn.send(JSON.stringify(peer_connection.localDescription));
+                }
+            }
+            peer_connection.onicecandidate = e => {
+                console.log("onicecandidate", e)
+                let candidatesLog = document.getElementById("candidates");
+                if (candidatesLog && e.candidate && e.candidate.address) {
+                    candidatesLog.innerText += e.candidate.address + ":" + e.candidate.port + "\n";
+                }
+            }
+            peer_connection.oniceconnectionstatechange = e => {
+                console.log("oniceconnectionstatechange", e)
+                ///peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+                let candidatesLog = document.getElementById("candidates");
+                if (candidatesLog) {
+                    candidatesLog.innerText += "iceConnectionState: " + peer_connection.iceConnectionState + "\n";
+                }
+            }
+
+            peer_connection.onconnectionstatechange = e => {
+                console.log("onconnectionstatechange", e)
+                let candidatesLog = document.getElementById("candidates");
+                if (candidatesLog) {
+                    candidatesLog.innerText += "connectionState: " + peer_connection.connectionState + "\n";
+                    if (peer_connection.connectionState === "connected") {
+                        let pair = peer_connection.getTransceivers()[0].receiver.transport.iceTransport.getSelectedCandidatePair()
+                        if (pair.local && pair.remote) {
+                            let x = "" + pair.local.address + "";
+                            console.log(x);
+                            candidatesLog.innerText += "local candidate: " + x + ":" + pair.local.port + "\n";
+                            candidatesLog.innerText += "remote candidate: " + pair.remote.address + ":" + pair.remote.port + "\n";
+
+                        } else {
+                            candidatesLog.innerText += "candidate pair: " + JSON.stringify(pair) + "\n";
+                        }
+                    }
+                }
+            }
+
+
+            if (msg != null)
+                setStatus("Created peer connection for call, waiting for SDP");
+
+            return local_stream_promise;
+        }
+
+        window.onload = websocketServerConnect;
+
+
+     */
+
+</script>
+</html>
