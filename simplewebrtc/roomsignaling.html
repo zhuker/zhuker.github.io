@@ -12,9 +12,10 @@
 
 <body>
 <div>Status: <span id="status">unknown</span></div>
-<div>Our id is <b id="peer-id">unknown</b></div>
 <br/>
-<input type="checkbox" id="no_stun_checkbox">No STUN (local only)
+<!-- newer chrome browsers (88+) need user click event to display video -->
+<button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
+<button disabled id="fullscreenButton" name="fullscreen" value="fullscreen" onclick="onfullscreenClicked()">fullscreen</button>
 <br/>
 <div id="streamHolder"
      style="  display: flex;  justify-content: center;  align-items: center;  width: 100%;  height: 100%;  background: black;">
@@ -23,9 +24,6 @@
     </video>
 </div>
 <br/>
-<!-- newer chrome browsers (88+) need user click event to display video -->
-<button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
-<button disabled id="fullscreenButton" name="fullscreen" value="fullscreen" onclick="onfullscreenClicked()">fullscreen</button>
 <br/>
 Local Candidates
 <pre id="candidates"></pre>
@@ -272,6 +270,7 @@ Local Candidates
         return parseInt(getQueryVariable("ourid") || Math.floor(Math.random() * (9000 - 10) + 10).toString());
     }
 
+    const placeid = getQueryVariable("placeid")
     const remoteid = getQueryVariable("remoteid")
     const ourid = getOurId();
 
@@ -293,6 +292,10 @@ Local Candidates
             pingCounter++;
             return dataChannel.send(msg);
         }, 2000);
+        if (placeid)
+            dataChannel.send(createLaunchGamePacket())
+        else
+            dataChannel.send(createLaunchRobloxPacket())
     };
 
     const handleDataChannelMessageReceived = (event) => {
@@ -385,13 +388,17 @@ Local Candidates
                     "type": peer_connection.localDescription.type,
                     "sdp": peer_connection.localDescription.sdp,
                     "screen": {
-                        "width": screen.width,
-                        "height": screen.height,
+                        "width": (screen.width * window.devicePixelRatio)|0,
+                        "height": (screen.height * window.devicePixelRatio)|0,
+                        "dpi": (window.devicePixelRatio * 144)|0,
                         "orientation": {
                             "angle": screen.orientation.angle,
                             "type": screen.orientation.type
                         }
                     }
+                }
+                if (placeid) {
+                    // answerExtended['intentData'] = `robloxmobile://placeID=${parseInt(placeid)}`;
                 }
                 sendAnswerCallback(JSON.stringify(answerExtended));
             }
@@ -460,6 +467,8 @@ Local Candidates
     const ControlMessage = {
         TYPE_INJECT_KEYCODE: 0x00,
         TYPE_INJECT_TOUCH_EVENT: 0x02,
+        TYPE_START_APP: 16,
+        TYPE_START_APP_WITH_INTENT: 18,
     };
 
     class DataOutputStream {
@@ -491,6 +500,32 @@ Local Candidates
         toUint8Array() {
             return new Uint8Array(this.buffer);
         }
+
+        write(bytes) {
+            new Uint8Array(this.buffer).set(bytes, this.offset);
+            this.offset += bytes.length;
+        }
+    }
+
+    function createLaunchRobloxPacket() {
+        const name = new TextEncoder().encode("com.roblox.client");
+        let dos = new DataOutputStream(1 + 1 + name.length);
+        dos.writeByte(ControlMessage.TYPE_START_APP);
+        dos.writeByte(name.length);
+        dos.write(name);
+        return dos.toUint8Array();
+    }
+
+    function createLaunchGamePacket() {
+        const name = new TextEncoder().encode("com.roblox.client");
+        const url = new TextEncoder().encode(`robloxmobile://placeID=${parseInt(placeid)}`);
+        let dos = new DataOutputStream(1 + 1 + name.length + 2 + url.length);
+        dos.writeByte(ControlMessage.TYPE_START_APP_WITH_INTENT);
+        dos.writeByte(name.length);
+        dos.write(name);
+        dos.writeShort(url.length);
+        dos.write(url);
+        return dos.toUint8Array();
     }
 
     function createTouchEventPacket(x, y, w, h, pressure, actionButton, buttons, action, pointerId) {
