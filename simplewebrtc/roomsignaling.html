@@ -964,9 +964,10 @@ Local Candidates
         const buttons = e.buttons;
         return createTouchEventPacket(x, y, w, h, pressure, actionButton, buttons, action, pointerId);
     }
-
-    getVideoElement().addEventListener("pointerrawupdate", e => {
-        e.preventDefault();
+    function isPointerRawUpdateSupported() {
+        return 'onpointerrawupdate' in window || 'onpointerrawupdate' in document.createElement('div');
+    }
+    function onPointerUpdate(e) {
         console.log(e.buttons, e.offsetX, e.offsetY, e.pressure, e.pointerType, e);
         if (!dataChannel || e.buttons === 0)
             return;
@@ -975,7 +976,22 @@ Local Candidates
             pointerId = pointers.updatePointer(e.pointerId);
         }
         dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_MOVE, pointerId, e));
-    });
+    }
+
+    if (isPointerRawUpdateSupported()) {
+        getVideoElement().addEventListener("pointerrawupdate", e => {
+            console.log("pointerrawupdate", e.pointerType, e.pointerId, e.buttons);
+            e.preventDefault();
+            onPointerUpdate(e);
+        });
+    } else {
+        getVideoElement().addEventListener("pointermove", e => {
+            console.log("pointermove", e.pointerType, e.pointerId, e.buttons);
+            e.preventDefault();
+            onPointerUpdate(e);
+        });
+    }
+
     getVideoElement().addEventListener("pointerdown", e => {
         e.preventDefault();
         console.log("Pressed", e.button, e.pointerType, e)
