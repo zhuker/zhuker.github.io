@@ -11,7 +11,7 @@
 </head>
 
 <body>
-<div>Status: <span id="status">unknown</span></div>
+<div>Status: <span id="status2"></span> <span id="status"></span></div>
 <br/>
 <!-- newer chrome browsers (88+) need user click event to display video -->
 <button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
@@ -288,6 +288,17 @@ Local Candidates
         console.log("dataChannel.OnOpen", event);
         dataChannel = event.target;
         pingTimer = setInterval(() => {
+            if (peer_connection) {
+                peer_connection.getStats().then(e => {
+                    let rtt = 0;
+                    e.forEach(report => {
+                        if (report.type === "candidate-pair" && report.state === "succeeded") {
+                            rtt = Math.max(rtt, ((report.currentRoundTripTime * 1000)|0))
+                        }
+                    });
+                    setStatus2(`ping ${rtt} msec`);
+                })
+            }
             const msg = "ping" + pingCounter;
             pingCounter++;
             return dataChannel.send(msg);
@@ -327,6 +338,14 @@ Local Candidates
     function setStatus(text) {
         console.log(text);
         const span = document.getElementById("status");
+        // Don't set the status if it already contains an error
+        if (!span.classList.contains('error'))
+            span.textContent = text;
+    }
+
+    function setStatus2(text) {
+        console.log(text);
+        const span = document.getElementById("status2");
         // Don't set the status if it already contains an error
         if (!span.classList.contains('error'))
             span.textContent = text;
