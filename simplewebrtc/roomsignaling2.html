@@ -349,27 +349,22 @@
         });
     }
 
-    let runOnIosOnce = !isIOSDevice();
-
-    function fakeFullscreenApple() {
-        if (runOnIosOnce) return;
-        runOnIosOnce = true;
+    let fullscreenClicked = false;
+    function fakeFullscreen() {
+        if (fullscreenClicked) return;
+        fullscreenClicked = true;
+        getVideoElement().play();
         if (isIOSDevice()) {
             statusHolder.style.display = "none";
             buttonsHolder.style.display = "none";
             logHolder.style.display = "none";
+        } else {
+            streamHolder.requestFullscreen();
         }
-    }
-
-    function fakeFullscreen() {
-        statusHolder.style.display = "none";
-        buttonsHolder.style.display = "none";
-        logHolder.style.display = "none";
     }
 
 
     getVideoElement().addEventListener("pointerdown", e => {
-        e.target.play();
         fakeFullscreen();
         e.preventDefault();
         let [x, y] = getIntrinsicXY(e.target, e);
