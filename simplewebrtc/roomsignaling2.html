@@ -108,7 +108,7 @@
         console.log("dataChannel.OnOpen", event);
         dataChannel = event.target;
         pingTimer = setInterval(() => {
-            if (peer_connection) {
+            if (peer_connection && statusHolder.style.display !== "none") {
                 peer_connection.getStats().then(e => {
                     let rtt = 0;
                     e.forEach(report => {
@@ -130,8 +130,8 @@
     };
 
     const handleDataChannelMessageReceived = (event) => {
-        console.log("dataChannel.OnMessage:", event, event.data.type);
-        setStatus("Received data channel message " + event.data);
+        // console.log("dataChannel.OnMessage:", event, event.data.type);
+        // setStatus("Received data channel message " + event.data);
     };
 
     const handleDataChannelError = (error) => console.log("dataChannel.OnError:", error);
@@ -316,20 +316,28 @@
         return 'onpointerrawupdate' in window || 'onpointerrawupdate' in document.createElement('div');
     }
 
+    let pointerUpdateCounter = 0;
     function onPointerUpdate(e) {
         // console.log(e.buttons, e.offsetX, e.offsetY, e.pressure, e.pointerType, e);
         if (!dataChannel || e.buttons === 0)
             return;
+        pointerUpdateCounter = pointerUpdateCounter|0;
+        pointerUpdateCounter++;
+        if ((pointerUpdateCounter & 1) === 0) {
+            return;
+        }
+
         let pointerId = e.pointerId;
         if (e.pointerType === "touch") {
             pointerId = pointers.updatePointer(e.pointerId);
         }
+        // console.log("pointer update sent");
         dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_MOVE, pointerId, e));
     }
 
     if (isPointerRawUpdateSupported()) {
         getVideoElement().addEventListener("pointerrawupdate", e => {
-            console.log("pointerrawupdate", e.pointerType, e.pointerId, e.buttons);
+            // console.log("pointerrawupdate", e.pointerType, e.pointerId, e.buttons);
             e.preventDefault();
             onPointerUpdate(e);
         });
