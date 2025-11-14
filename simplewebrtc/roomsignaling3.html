@@ -1,0 +1,429 @@
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <style>
+        .error {
+            color: red;
+        }
+        #streamHolder {
+            width: 100%;
+            height: 100%;               /* whatever size you need */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: black;          /* letterbox lives HERE, not in <video> */
+            overflow: hidden;           /* optional */
+        }
+
+        #streamHolder video {
+            height: 100%;
+            width: 100%;                /* preserves aspect ratio */
+            max-width: 100%;
+            max-height: 100%;
+            display: block;
+        }
+    </style>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="RoomSignaling.js"></script>
+    <script src="AndroidInputEvents.js"></script>
+</head>
+
+<body style="width: 100%; height: 100%; padding: 0; overflow: hidden; margin: 0;">
+<div id="statusHolder">Status: <span id="status2"></span> <span id="status"></span><br/></div>
+<!-- newer chrome browsers (88+) need user click event to display video -->
+<div id="buttonsHolder">
+    <button disabled id="play" name="play" value="play" onclick="onplayclicked()">play</button>
+    <button disabled id="fullscreenButton" name="fullscreen" value="fullscreen" onclick="onfullscreenClicked()">
+        fullscreen
+    </button>
+    <br/>
+</div>
+<div id="streamHolder" class="videoContainer">
+    <video id="stream"  autoplay playsinline loop></video>
+</div>
+<div id="logHolder">
+    <br/>
+    <br/>
+    Local Candidates
+    <pre id="candidates"></pre>
+</div>
+</body>
+<script>
+
+    function isIOSDevice() {
+        const userAgent = navigator.userAgent;
+        return /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream; // Exclude Windows phones
+    }
+
+    function onplayclicked() {
+        getVideoElement().play()
+    }
+
+    function onfullscreenClicked() {
+        getVideoElement().play()
+        streamHolder.requestFullscreen()
+    }
+
+    let connect_attempts = 0;
+    let peer_connection;
+    //let iceServers = [{urls: ["stun:stun.l.google.com:19302"]}];
+    // const pcConfig = {
+    //     iceServers: [{urls: ["stun:stun.l.google.com:19302"]}]
+    // }
+    const pcConfig = {
+        iceServers: [{"urls": ["turn:54.153.50.217:3478"], "username": "wutwut", "credential": "pp4308"}],
+        iceTransportPolicy: "relay"
+    };
+    // const pcConfig = {};
+    function getQueryVariable(variable) {
+        const query = window.location.search.substring(1);
+        const vars = query.split('&');
+        for (let i = 0; i < vars.length; i++) {
+            const pair = vars[i].split('=');
+            if (decodeURIComponent(pair[0]) === variable) {
+                return decodeURIComponent(pair[1]);
+            }
+        }
+        console.log('Query variable not found', variable);
+    }
+
+    function getOurId() {
+        return parseInt(getQueryVariable("ourid") || Math.floor(Math.random() * (9000 - 10) + 10).toString());
+    }
+
+    const placeid = getQueryVariable("placeid")
+    const remoteid = getQueryVariable("remoteid")
+    const ourid = getOurId();
+
+    const receiverWs = new RoomSignaling("wss://zhuker.video:8443", ourid)
+
+    function getVideoElement() {
+        return document.getElementById("stream");
+    }
+
+    let dataChannel = null;
+    let pingTimer = null;
+    let pingCounter = 0
+
+    const handleDataChannelOpen = (event) => {
+        console.log("dataChannel.OnOpen", event);
+        dataChannel = event.target;
+        pingTimer = setInterval(() => {
+            if (peer_connection && statusHolder.style.display !== "none") {
+                peer_connection.getStats().then(e => {
+                    let rtt = 0;
+                    e.forEach(report => {
+                        if (report.type === "candidate-pair" && report.state === "succeeded") {
+                            rtt = Math.max(rtt, ((report.currentRoundTripTime * 1000) | 0))
+                        }
+                    });
+                    setStatus2(`ping ${rtt} msec`);
+                })
+            }
+            const msg = "ping" + pingCounter;
+            pingCounter++;
+            return dataChannel.send(msg);
+        }, 2000);
+        if (placeid)
+            dataChannel.send(createLaunchGamePacket())
+        else
+            dataChannel.send(createLaunchRobloxPacket())
+    };
+
+    const handleDataChannelMessageReceived = (event) => {
+        // console.log("dataChannel.OnMessage:", event, event.data.type);
+        // setStatus("Received data channel message " + event.data);
+    };
+
+    const handleDataChannelError = (error) => console.log("dataChannel.OnError:", error);
+
+    const handleDataChannelClose = (event) => console.log("dataChannel.OnClose", event);
+
+    function onDataChannel(event) {
+        setStatus("Data channel created", event);
+        let receiveChannel = event.channel;
+        receiveChannel.onopen = handleDataChannelOpen;
+        receiveChannel.onmessage = handleDataChannelMessageReceived;
+        receiveChannel.onerror = handleDataChannelError;
+        receiveChannel.onclose = handleDataChannelClose;
+    }
+
+    function resetVideo() {
+        // Reset the video element and stop showing the last received frame
+        const videoElement = getVideoElement();
+        videoElement.pause();
+        videoElement.src = "";
+        videoElement.load();
+    }
+
+    function setStatus(text) {
+        console.log(text);
+        const span = document.getElementById("status");
+        // Don't set the status if it already contains an error
+        if (!span.classList.contains('error'))
+            span.textContent = text;
+    }
+
+    function setStatus2(text) {
+        console.log(text);
+        const span = document.getElementById("status2");
+        // Don't set the status if it already contains an error
+        if (!span.classList.contains('error'))
+            span.textContent = text;
+    }
+
+    function setError(text) {
+        console.error(text);
+        const span = document.getElementById("status");
+        span.textContent = text;
+        span.classList.add('error');
+    }
+
+    let remoteStream = new MediaStream();
+
+    function onRemoteTrack(event) {
+        console.log('onRemoteTrack', event);
+        const track = event.track;
+        remoteStream.addTrack(track);
+        getVideoElement().srcObject = remoteStream;
+        getVideoElement().style.backgroundImage = "url(clicktoplay.jpeg)";
+        getVideoElement().style.backgroundSize = "contain";
+        play.disabled = false;
+        fullscreenButton.disabled = false;
+        const receiver = peer_connection.getReceivers().find(r => r.track.kind === 'video')
+        if ('jitterBufferTarget' in receiver) {
+            receiver.jitterBufferTarget = 1;
+        }
+        if ('playoutDelayHint' in receiver) {
+            receiver.playoutDelayHint = 0.001;
+        }
+    }
+
+    function logIceConnection(msg) {
+        console.log(msg);
+        let candidatesLog = document.getElementById("candidates");
+        if (candidatesLog) {
+            candidatesLog.innerText += msg + "\n";
+        }
+    }
+
+    function extendSdp(sdpDesc) {
+        let screenw = screen.width;
+        let screenh = screen.height;
+        if (isIOSDevice()) {
+            screenw = document.body.clientWidth;
+            screenh = document.body.clientHeight;
+            console.log(`body size ${screenw}x${screenh}`);
+        }
+        let requestedw = ((screenw * window.devicePixelRatio) | 0) & ~7;
+        let requestedh = ((screenh * window.devicePixelRatio) | 0) & ~7;
+        console.log(`requested screen size ${requestedw}x${requestedh}`);
+        const answerExtended = {
+            "type": sdpDesc.type,
+            "sdp": sdpDesc.sdp,
+            "screen": {
+                "width": requestedw,
+                "height": requestedh,
+                "dpi": (window.devicePixelRatio * 144) | 0,
+                "orientation": {
+                    "angle": screen.orientation.angle,
+                    "type": screen.orientation.type
+                }
+            }
+        }
+        if (placeid) {
+            // answerExtended['intentData'] = `robloxmobile://placeID=${parseInt(placeid)}`;
+        }
+        return answerExtended;
+    }
+
+    function createPcSendOffer(sendOfferCallback) {
+        resetVideo();
+        if (peer_connection) {
+            peer_connection.close();
+            peer_connection = null;
+            remoteStream = new MediaStream();
+        }
+        // Reset connection attempts because we connected successfully
+        connect_attempts = 0;
+
+        setStatus('Creating RTCPeerConnection');
+
+        peer_connection = new RTCPeerConnection(pcConfig);
+        peer_connection.ondatachannel = onDataChannel;
+        peer_connection.ontrack = onRemoteTrack;
+        peer_connection.addTransceiver('video', {direction: "recvonly"});
+        // peer_connection.addTransceiver('audio', {direction: "recvonly"});
+        peer_connection.createDataChannel('label', null);
+
+        peer_connection.onicegatheringstatechange = () => {
+            logIceConnection('onicegatheringstatechange ' + peer_connection.iceGatheringState)
+            if (peer_connection.iceGatheringState === "complete") {
+                sendOfferCallback(JSON.stringify(extendSdp(peer_connection.localDescription)));
+            }
+        }
+        peer_connection.onicecandidate = e => {
+            if (e.candidate && e.candidate.address) {
+                logIceConnection('onicecandidate ' + e.candidate.address + ":" + e.candidate.port)
+            } else {
+                logIceConnection('onicecandidate ' + e)
+            }
+        }
+        peer_connection.onconnectionstatechange = e => {
+            logIceConnection("onconnectionstatechange " + peer_connection.connectionState);
+            if (peer_connection.connectionState === "connected") {
+                let transceivers = peer_connection.getTransceivers();
+                for (let i = 0; i < transceivers.length; i++) {
+                    if (transceivers[i].receiver.transport != null) {
+                        let pair = transceivers[i].receiver.transport.iceTransport.getSelectedCandidatePair()
+                        if (pair.local && pair.remote) {
+                            let x = "" + pair.local.address + "";
+                            logIceConnection("local candidate: " + x + ":" + pair.local.port)
+                            logIceConnection("remote candidate: " + pair.remote.address + ":" + pair.remote.port);
+                        } else {
+                            logIceConnection("candidate pair: " + JSON.stringify(pair));
+                        }
+                    }
+                }
+            }
+        }
+
+        peer_connection.createOffer().then(offer => {
+            console.log("offer", offer);
+            setStatus("Offer created");
+            peer_connection.setLocalDescription(offer).then(ok => {
+                console.log("local sdp", peer_connection.localDescription);
+            })
+        })
+    }
+
+    receiverWs.onOfferRequested((remoteId) => {
+        setStatus("offer requested");
+        createPcSendOffer(offerJson => {
+            setStatus("offer sent")
+            receiverWs.sendOffer(remoteId, offerJson);
+            receiverWs.receiveAnswer((remoteId, sdp) => {
+                setStatus("answer received")
+                if (remoteId !== remoteid) throw new Error("remoteId mismatch");
+                const parsed = JSON.parse(sdp);
+                if (!parsed) throw new Error("error parsing sdp");
+                if (parsed.type !== "answer") throw new Error("type not answer");
+                peer_connection.setRemoteDescription(parsed);
+            });
+        })
+    });
+    receiverWs.connect(remoteid, (success, peerId) => {
+        setStatus(`Connected ${peerId}`);
+    }, () => {
+        setStatus(`Disconnected ${peerId}`);
+    });
+
+    const pointers = new Pointers()
+
+    function isPointerRawUpdateSupported() {
+        return 'onpointerrawupdate' in window || 'onpointerrawupdate' in document.createElement('div');
+    }
+
+    let pointerUpdateCounter = 0;
+    function onPointerUpdate(e) {
+        // console.log(e.buttons, e.offsetX, e.offsetY, e.pressure, e.pointerType, e);
+        if (!dataChannel || e.buttons === 0)
+            return;
+        pointerUpdateCounter = pointerUpdateCounter|0;
+        pointerUpdateCounter++;
+        if ((pointerUpdateCounter & 1) === 0) {
+            return;
+        }
+
+        let pointerId = e.pointerId;
+        if (e.pointerType === "touch") {
+            pointerId = pointers.updatePointer(e.pointerId);
+        }
+        // console.log("pointer update sent");
+        dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_MOVE, pointerId, e));
+    }
+
+    if (isPointerRawUpdateSupported()) {
+        getVideoElement().addEventListener("pointerrawupdate", e => {
+            // console.log("pointerrawupdate", e.pointerType, e.pointerId, e.buttons);
+            e.preventDefault();
+            onPointerUpdate(e);
+        });
+    } else {
+        getVideoElement().addEventListener("pointermove", e => {
+            // console.log("pointermove", e.pointerType, e.pointerId, e.buttons);
+            e.preventDefault();
+            onPointerUpdate(e);
+        });
+    }
+
+    let fullscreenClicked = false;
+    function fakeFullscreen() {
+        if (fullscreenClicked) return;
+        fullscreenClicked = true;
+        getVideoElement().play();
+        if (isIOSDevice()) {
+            statusHolder.style.display = "none";
+            buttonsHolder.style.display = "none";
+            logHolder.style.display = "none";
+        } else {
+            streamHolder.requestFullscreen();
+        }
+    }
+
+
+    getVideoElement().addEventListener("pointerdown", e => {
+        fakeFullscreen();
+        e.preventDefault();
+        let [x, y] = getIntrinsicXY(e.target, e);
+        console.log("Pressed", e.button, e.pointerType, x, y);
+        if (!dataChannel)
+            return;
+        let pointerId = e.pointerId;
+        if (e.pointerType === "touch") {
+            pointerId = pointers.updatePointer(e.pointerId);
+        }
+        dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_DOWN, pointerId, e));
+    });
+    getVideoElement().addEventListener("pointerup", e => {
+        e.preventDefault();
+        let [x, y] = getIntrinsicXY(e.target, e);
+        console.log("Released", e.button, e.pointerType, x, y);
+        if (!dataChannel)
+            return;
+        let pointerId = e.pointerId;
+        if (e.pointerType === "touch") {
+            pointerId = pointers.deletePointer(e.pointerId);
+        }
+        dataChannel.send(createTouchEventPacketFromEvent(MotionEvent.ACTION_UP, pointerId, e));
+    });
+
+    window.addEventListener("keydown", e => {
+        console.log(e.code, CodeToAndroidKeyCode[e.code], e.repeat, e.shiftKey);
+        if (!dataChannel)
+            return;
+        const packet = keyboardEventToPacket(e)
+        dataChannel.send(packet);
+    });
+    window.addEventListener("keyup", e => {
+        console.log(e.code, CodeToAndroidKeyCode[e.code], e.repeat, e.shiftKey);
+        if (!dataChannel)
+            return;
+        const packet = keyboardEventToPacket(e)
+        dataChannel.send(packet);
+    });
+
+    function disableTouch(event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    // Add listeners when the video goes fullscreen
+    // You might want to wrap this in logic for when the video actually enters fullscreen.
+    getVideoElement().addEventListener('touchstart', disableTouch);
+    getVideoElement().addEventListener('touchmove', disableTouch);
+    getVideoElement().addEventListener('touchend', disableTouch);
+    getVideoElement().addEventListener('touchcancel', disableTouch);
+
+</script>
+</html>
